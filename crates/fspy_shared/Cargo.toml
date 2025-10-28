@@ -9,7 +9,6 @@ allocator-api2 = { workspace = true }
 bincode = { workspace = true }
 bstr = { workspace = true }
 bytemuck = { workspace = true, features = ["must_cast"] }
-memmap2 = { workspace = true }
 shared_memory = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -21,22 +20,8 @@ os_str_bytes = { workspace = true }
 winapi = { workspace = true, features = ["std"] }
 winsafe = { workspace = true }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-phf = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-base64 = { workspace = true }
-derive-where = { workspace = true }
-libc = { workspace = true }
-nix = { workspace = true, features = ["mman"] }
-
-# [features]
-# supervisor = ["dep:tokio", "dep:passfd"]
-# target = []
-
 [dev-dependencies]
 assert2 = { workspace = true }
-base64 = { workspace = true }
 ctor = { workspace = true }
 fspy_test_utils = { workspace = true }
 shared_memory = { workspace = true }
