@@ -108,14 +108,12 @@ toml = "0.9.5"
 tracing = "0.1.41"
 tracing-error = "0.2.1"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "serde"] }
-tree-sitter = "0.24.7"
 tree-sitter-bash = "0.23.1"
 tui-term = "0.2.0"
 twox-hash = "2.1.1"
 uuid = "1.18.1"
 vite_glob = { path = "crates/vite_glob" }
 vite_path = { path = "crates/vite_path" }
-vite_shell = { path = "crates/vite_shell" }
 vite_str = { path = "crates/vite_str" }
 vite_workspace = { path = "crates/vite_workspace" }
 wax = "0.6.0"

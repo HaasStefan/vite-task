@@ -3361,7 +3361,6 @@ version = "0.0.0"
 dependencies = [
  "ast-grep-core",
  "thiserror 2.0.17",
- "tree-sitter",
  "tree-sitter-bash",
 ]
 

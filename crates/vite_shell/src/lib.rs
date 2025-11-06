@@ -2,8 +2,6 @@
 //!
 //! This crate provides functionality to parse and split bash scripts by top-level operators.
 
-use std::iter;
-
 use ast_grep_core::{AstGrep, Doc, Language};
 use thiserror::Error;
 
