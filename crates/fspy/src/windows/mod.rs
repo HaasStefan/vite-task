@@ -139,7 +139,7 @@ pub(crate) async fn spawn_impl(command: Command) -> Result<TrackedChild, SpawnEr
         wait_handle: tokio::spawn(async move {
             let status = child.wait().await?;
             // Lock the ipc channel after the child has exited.
-            // We are not interested in path accesses from decendants after the main child has exited.
+            // We are not interested in path accesses from descendants after the main child has exited.
             let ipc_receiver_lock_guard = OwnedReceiverLockGuard::lock_async(receiver).await?;
             let path_accesses = PathAccessIterable { ipc_receiver_lock_guard };
 

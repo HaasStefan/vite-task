@@ -153,7 +153,7 @@ pub(crate) async fn spawn_impl(mut command: Command) -> Result<TrackedChild, Spa
             let arenas = arenas.collect::<Vec<_>>();
 
             // Lock the ipc channel after the child has exited.
-            // We are not interested in path accesses from decendants after the main child has exited.
+            // We are not interested in path accesses from descendants after the main child has exited.
             let ipc_receiver_lock_guard = OwnedReceiverLockGuard::lock_async(ipc_receiver).await?;
             let path_accesses = PathAccessIterable { arenas, ipc_receiver_lock_guard };
 
