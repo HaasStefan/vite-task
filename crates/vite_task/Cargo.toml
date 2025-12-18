@@ -13,10 +13,13 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 bincode = { workspace = true, features = ["derive"] }
 bstr = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 compact_str = { workspace = true, features = ["serde"] }
 dashmap = { workspace = true }
+derive_more = { workspace = true }
 diff-struct = { workspace = true }
 fspy = { workspace = true }
 futures-core = { workspace = true }
@@ -41,6 +44,8 @@ vite_glob = { workspace = true }
 vite_path = { workspace = true }
 vite_shell = { workspace = true }
 vite_str = { workspace = true }
+vite_task_graph = { workspace = true }
+vite_task_plan = { workspace = true }
 vite_workspace = { workspace = true }
 wax = { workspace = true }
 
@@ -48,4 +53,8 @@ wax = { workspace = true }
 nix = { workspace = true }
 
 [dev-dependencies]
+copy_dir = { workspace = true }
+insta = { workspace = true, features = ["glob", "json", "redactions"] }
 tempfile = { workspace = true }
+toml = { workspace = true }
+vite_path = { workspace = true, features = ["absolute-redaction"] }

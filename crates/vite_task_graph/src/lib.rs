@@ -18,7 +18,7 @@ use petgraph::{
     visit::{Control, DfsEvent, depth_first_search},
 };
 use serde::Serialize;
-use specifier::TaskSpecifier;
+pub use specifier::TaskSpecifier;
 use vec1::smallvec_v1::SmallVec1;
 use vite_path::AbsolutePath;
 use vite_str::Str;
@@ -116,7 +116,7 @@ pub enum TaskGraphLoadError {
 ///
 /// - When the specifier is from `dependOn` of a known task, `UnknownPackageError` is `Infallible` because the origin package is always known.
 /// - When the specifier is from a CLI command, `UnknownPackageError` can be a real error type in case cwd is not in any package.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, Serialize)]
 pub enum SpecifierLookupError<PackageUnknownError = Infallible> {
     #[error("Package '{package_name}' is ambiguous among multiple packages: {package_paths:?}")]
     AmbiguousPackageName { package_name: Str, package_paths: Box<[Arc<AbsolutePath>]> },
@@ -125,7 +125,12 @@ pub enum SpecifierLookupError<PackageUnknownError = Infallible> {
     PackageNameNotFound { package_name: Str },
 
     #[error("Task '{task_name}' not found in package {package_name}")]
-    TaskNameNotFound { package_name: Str, task_name: Str, package_index: PackageNodeIndex },
+    TaskNameNotFound {
+        package_name: Str,
+        task_name: Str,
+        #[serde(skip)]
+        package_index: PackageNodeIndex,
+    },
 
     #[error(
         "Nowhere to look for task '{task_name}' because the package is unknown: {unspecifier_package_error}"
@@ -175,12 +180,12 @@ pub type TaskGraph = DiGraph<TaskNode, TaskDependencyType, TaskIx>;
 impl IndexedTaskGraph {
     /// Load the task graph from a discovered workspace using the provided config loader.
     pub async fn load(
-        workspace_root: WorkspaceRoot,
-        config_loader: impl loader::UserConfigLoader,
+        workspace_root: &WorkspaceRoot,
+        config_loader: &dyn loader::UserConfigLoader,
     ) -> Result<Self, TaskGraphLoadError> {
         let mut task_graph = DiGraph::<TaskNode, TaskDependencyType, TaskIx>::default();
 
-        let package_graph = vite_workspace::load_package_graph(&workspace_root)?;
+        let package_graph = vite_workspace::load_package_graph(workspace_root)?;
 
         // Record dependency specifiers for each task node to add explicit dependencies later
         let mut dependency_specifiers_with_task_node_indices: Vec<(Arc<[Str]>, TaskNodeIndex)> =

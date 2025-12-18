@@ -5,7 +5,7 @@ use std::{
 use vite_path::AbsolutePath;
 use vite_task_graph::{IndexedTaskGraph, TaskNodeIndex, display::TaskDisplay};
 
-use crate::{PlanCallbacks, path_env::prepend_path_env};
+use crate::{PlanRequestParser, path_env::prepend_path_env};
 
 #[derive(Debug, thiserror::Error)]
 #[error(
@@ -20,18 +20,18 @@ pub struct TaskRecursionError {
 #[derive(Debug)]
 pub struct PlanContext<'a> {
     /// The current working directory.
-    pub cwd: Arc<AbsolutePath>,
+    cwd: Arc<AbsolutePath>,
 
     /// The environment variables for the current execution context.
-    pub envs: HashMap<Arc<OsStr>, Arc<OsStr>>,
+    envs: HashMap<Arc<OsStr>, Arc<OsStr>>,
 
     /// The callbacks for loading task graphs and parsing commands.
-    pub callbacks: &'a mut (dyn PlanCallbacks + 'a),
+    callbacks: &'a mut (dyn PlanRequestParser + 'a),
 
     /// The current call stack of task index nodes being planned.
-    pub task_call_stack: Vec<(TaskNodeIndex, Range<usize>)>,
+    task_call_stack: Vec<(TaskNodeIndex, Range<usize>)>,
 
-    pub indexed_task_graph: &'a IndexedTaskGraph,
+    indexed_task_graph: &'a IndexedTaskGraph,
 }
 
 /// A human-readable frame in the task call stack.
@@ -69,6 +69,15 @@ impl Display for TaskCallStackDisplay {
 }
 
 impl<'a> PlanContext<'a> {
+    pub fn new(
+        cwd: Arc<AbsolutePath>,
+        envs: HashMap<Arc<OsStr>, Arc<OsStr>>,
+        callbacks: &'a mut (dyn PlanRequestParser + 'a),
+        indexed_task_graph: &'a IndexedTaskGraph,
+    ) -> Self {
+        Self { cwd, envs, callbacks, task_call_stack: Vec::new(), indexed_task_graph }
+    }
+
     pub fn cwd(&self) -> &Arc<AbsolutePath> {
         &self.cwd
     }
@@ -113,7 +122,7 @@ impl<'a> PlanContext<'a> {
         self.task_call_stack.push((task_node_index, command_span));
     }
 
-    pub fn callbacks(&mut self) -> &mut (dyn PlanCallbacks + '_) {
+    pub fn callbacks(&mut self) -> &mut (dyn PlanRequestParser + '_) {
         self.callbacks
     }
 

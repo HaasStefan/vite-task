@@ -1,7 +1,5 @@
 use std::env::JoinPathsError;
 
-use vite_task_graph::display::TaskDisplay;
-
 use crate::{
     context::{PlanContext, TaskCallStackDisplay, TaskRecursionError},
     envs::ResolveEnvError,
@@ -35,10 +33,6 @@ pub enum TaskPlanErrorKind {
 
     #[error("Failed to add node_modules/.bin to PATH environment variable")]
     AddNodeModulesBinPathError {
-        /// This error occurred before parse the command of the task,
-        /// so the task call stack doesn't contain the current task (no command_span yet).
-        /// This field is where the error occurred, while the task call stack is the stack leading to it.s
-        task_display: TaskDisplay,
         #[source]
         join_paths_error: JoinPathsError,
     },
@@ -54,6 +48,12 @@ pub struct Error {
 
     #[source]
     kind: TaskPlanErrorKind,
+}
+
+impl TaskPlanErrorKind {
+    pub fn with_empty_call_stack(self) -> Error {
+        Error { task_call_stack: TaskCallStackDisplay::default(), kind: self }
+    }
 }
 
 pub(crate) trait TaskPlanErrorKindResultExt {
@@ -82,10 +82,7 @@ impl<T> TaskPlanErrorKindResultExt for Result<T, TaskPlanErrorKind> {
     fn with_empty_call_stack(self) -> Result<T, Error> {
         match self {
             Ok(value) => Ok(value),
-            Err(kind) => {
-                let task_call_stack = TaskCallStackDisplay::default();
-                Err(Error { task_call_stack, kind })
-            }
+            Err(kind) => Err(kind.with_empty_call_stack()),
         }
     }
 }

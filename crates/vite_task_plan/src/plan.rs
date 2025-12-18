@@ -30,27 +30,25 @@ async fn plan_task_as_execution_node(
         .map_err(TaskPlanErrorKind::TaskRecursionDetected)
         .with_plan_context(&context)?;
 
+    let task_node = &context.indexed_task_graph().task_graph()[task_node_index];
+    let command_str = task_node.resolved_config.command.as_str();
+
     // Prepend {package_path}/node_modules/.bin to PATH
     let package_node_modules_bin_path = context
         .indexed_task_graph()
         .get_package_path_for_task(task_node_index)
         .join("node_modules")
         .join(".bin");
-    context
-        .prepend_path(&package_node_modules_bin_path)
-        .map_err(|join_paths_error| TaskPlanErrorKind::AddNodeModulesBinPathError {
-            task_display: context.indexed_task_graph().display_task(task_node_index),
-            join_paths_error,
-        })
-        .with_plan_context(&context)?;
-
-    let task_node = &context.indexed_task_graph().task_graph()[task_node_index];
-
-    // TODO: variable expansion (https://crates.io/crates/shellexpand) BEFORE parsing
-    let command_str = task_node.resolved_config.command.as_str();
+    if let Err(join_paths_error) = context.prepend_path(&package_node_modules_bin_path) {
+        // Push the current task frame with full command span (the path was added for every and_item of the command) before returning the error
+        context.push_stack_frame(task_node_index, 0..command_str.len());
+        return Err(TaskPlanErrorKind::AddNodeModulesBinPathError { join_paths_error })
+            .with_plan_context(&context);
+    }
 
     let mut items = Vec::<ExecutionItem>::new();
 
+    // TODO: variable expansion (https://crates.io/crates/shellexpand) BEFORE parsing
     // Try to parse the command string as a list of subcommands separated by `&&`
     if let Some(parsed_subcommands) = try_parse_as_and_list(command_str) {
         for (and_item, add_item_span) in parsed_subcommands {
@@ -70,9 +68,10 @@ async fn plan_task_as_execution_node(
             }
 
             // Try to parse the args of an and_item to a task request like `run -r build`
+            let cwd = Arc::clone(context.cwd());
             let task_request = context
                 .callbacks()
-                .get_plan_request(&and_item.program, &and_item.args)
+                .get_plan_request(&and_item.program, &and_item.args, &cwd)
                 .await
                 .map_err(|error| TaskPlanErrorKind::ParsePlanRequestError { error })
                 .with_plan_context(&context)?;
@@ -127,7 +126,10 @@ async fn plan_task_as_execution_node(
         });
     }
 
-    Ok(TaskExecution { task_node_index, items })
+    Ok(TaskExecution {
+        task_display: context.indexed_task_graph().display_task(task_node_index),
+        items,
+    })
 }
 
 pub fn plan_synthetic_request(

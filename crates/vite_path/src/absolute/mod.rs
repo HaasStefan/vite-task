@@ -1,3 +1,6 @@
+#[cfg(feature = "absolute-redaction")]
+pub mod redaction;
+
 use std::{
     ffi::OsStr,
     fmt::Display,
@@ -8,6 +11,7 @@ use std::{
 };
 
 use ref_cast::{RefCastCustom, ref_cast_custom};
+use serde::Serialize;
 
 use crate::relative::{FromPathError, InvalidPathDataError, RelativePathBuf};
 
@@ -18,6 +22,35 @@ pub struct AbsolutePath(Path);
 impl AsRef<Self> for AbsolutePath {
     fn as_ref(&self) -> &Self {
         self
+    }
+}
+
+impl Serialize for AbsolutePath {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[cfg(feature = "absolute-redaction")]
+        {
+            use redaction::REDACTION_PREFIX;
+
+            if let Some(redaction_prefix) = REDACTION_PREFIX
+                .with(|redaction_prefix| redaction_prefix.borrow().as_ref().map(Arc::clone))
+            {
+                match self.strip_prefix(redaction_prefix) {
+                    Ok(Some(stripped_path)) => return stripped_path.serialize(serializer),
+                    Err(strip_error) => {
+                        return Err(serde::ser::Error::custom(format!(
+                            "Failed to redact absolute path '{}': {}",
+                            self.as_path().display(),
+                            strip_error
+                        )));
+                    }
+                    Ok(None) => { /* continue to serialize full path */ }
+                }
+            }
+        }
+        self.as_path().serialize(serializer)
     }
 }
 
@@ -43,6 +76,14 @@ impl From<&AbsolutePath> for Arc<AbsolutePath> {
         let arc: Arc<Path> = path.0.into();
         let arc_raw = Arc::into_raw(arc) as *const AbsolutePath;
         unsafe { Self::from_raw(arc_raw) }
+    }
+}
+
+impl From<&AbsolutePath> for Box<AbsolutePath> {
+    fn from(path: &AbsolutePath) -> Self {
+        let path_box: Box<Path> = path.0.into();
+        let path_box_raw = Box::into_raw(path_box) as *mut AbsolutePath;
+        unsafe { Self::from_raw(path_box_raw) }
     }
 }
 
