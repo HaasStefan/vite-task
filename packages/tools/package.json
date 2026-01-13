@@ -1,0 +1,17 @@
+{
+  "name": "vite-task-tools",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "print-file": "./src/print-file.ts",
+    "print-env": "./src/print-env.js",
+    "json-edit": "./src/json-edit.ts",
+    "replace-file-content": "./src/replace-file-content.ts"
+  },
+  "dependencies": {
+    "cross-env": "^10.1.0",
+    "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
+    "vite-task-tools": "link:"
+  }
+}
