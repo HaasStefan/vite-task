@@ -1,7 +1,7 @@
 ---
 source: crates/vite_task_plan/tests/plan_snapshots/main.rs
 expression: "&plan_json"
-input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/cache-keys
+input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/cd-in-scripts
 ---
 {
   "root_node": {
@@ -9,12 +9,12 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/cache-keys
       {
         "key": [
           "<workspace>/",
-          "lint"
+          "cd-lint"
         ],
         "node": {
           "task_display": {
             "package_name": "",
-            "task_name": "lint",
+            "task_name": "cd-lint",
             "package_path": "<workspace>/"
           },
           "items": [
@@ -22,19 +22,19 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/cache-keys
               "execution_item_display": {
                 "task_display": {
                   "package_name": "",
-                  "task_name": "lint",
+                  "task_name": "cd-lint",
                   "package_path": "<workspace>/"
                 },
                 "command": "vp lint",
-                "and_item_index": null,
-                "cwd": "<workspace>/"
+                "and_item_index": 1,
+                "cwd": "<workspace>/src"
               },
               "kind": {
                 "Leaf": {
                   "Spawn": {
                     "cache_metadata": {
                       "spawn_fingerprint": {
-                        "cwd": "",
+                        "cwd": "src",
                         "program_fingerprint": {
                           "OutsideWorkspace": {
                             "program_name": "oxlint"
@@ -51,8 +51,8 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/cache-keys
                       },
                       "execution_cache_key": {
                         "UserTask": {
-                          "task_name": "lint",
-                          "and_item_index": 0,
+                          "task_name": "cd-lint",
+                          "and_item_index": 1,
                           "extra_args": [],
                           "package_path": ""
                         }
@@ -65,7 +65,7 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/cache-keys
                         "NO_COLOR": "1",
                         "PATH": "<workspace>/node_modules/.bin:<tools>/node_modules/.bin"
                       },
-                      "cwd": "<workspace>/"
+                      "cwd": "<workspace>/src"
                     }
                   }
                 }
