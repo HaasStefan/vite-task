@@ -1,3 +1,8 @@
+#![expect(
+    clippy::future_not_send,
+    reason = "ouroboros generates async builder methods that cannot satisfy Send bounds"
+)]
+
 use std::io;
 
 use bincode::borrow_decode_from_slice;
@@ -24,7 +29,7 @@ pub struct OwnedReceiverLockGuard {
 
 impl OwnedReceiverLockGuard {
     pub fn lock(receiver: Receiver) -> io::Result<Self> {
-        OwnedReceiverLockGuard::try_new(receiver, |receiver| receiver.lock())
+        Self::try_new(receiver, fspy_shared::ipc::channel::Receiver::lock)
     }
 
     pub async fn lock_async(receiver: Receiver) -> io::Result<Self> {

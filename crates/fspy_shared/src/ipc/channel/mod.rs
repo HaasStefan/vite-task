@@ -22,11 +22,18 @@ pub struct ChannelConf {
 }
 
 /// Creates a mpsc IPC channel with one receiver and a `ChannelConf` that can be passed around processes and used to create multiple senders
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "non-vite crate: cannot use vite_str/vite_path types"
+)]
 pub fn channel(capacity: usize) -> io::Result<(ChannelConf, Receiver)> {
     // Initialize the lock file with a unique name.
     let lock_file_path = temp_dir().join(format!("fspy_ipc_{}.lock", Uuid::new_v4()));
 
-    #[allow(unused_mut)]
+    #[cfg_attr(
+        not(windows),
+        expect(unused_mut, reason = "mut required on Windows, unused on Unix")
+    )]
     let mut conf = ShmemConf::new().size(capacity);
     // On Windows, allow opening raw shared memory (without backing file) for DLL injection scenarios
     #[cfg(target_os = "windows")]
@@ -50,11 +57,18 @@ impl ChannelConf {
     /// Creates a sender.
     ///
     /// This doesn't block on the file lock. Instead it returns immediately with error if the receiver is locked or dropped.
+    #[expect(
+        clippy::missing_errors_doc,
+        reason = "error conditions are self-evident from return type"
+    )]
     pub fn sender(&self) -> io::Result<Sender> {
         let lock_file = File::open(self.lock_file_path.to_cow_os_str())?;
         lock_file.try_lock_shared()?;
 
-        #[allow(unused_mut)]
+        #[cfg_attr(
+            not(windows),
+            expect(unused_mut, reason = "mut required on Windows, unused on Unix")
+        )]
         let mut conf = ShmemConf::new().size(self.shm_size).os_id(&self.shm_id);
         // On Windows, allow opening raw shared memory (without backing file) for DLL injection scenarios
         #[cfg(target_os = "windows")]
@@ -62,6 +76,8 @@ impl ChannelConf {
             conf = conf.allow_raw(true);
         }
         let shm = conf.open().map_err(io::Error::other)?;
+        // SAFETY: `shm` is a freshly opened shared memory region with valid pointer and size.
+        // Exclusive write access is ensured by the shared file lock held by this sender.
         let writer = unsafe { ShmWriter::new(shm) };
         Ok(Sender { writer, lock_file, lock_file_path: self.lock_file_path.clone() })
     }
@@ -89,10 +105,14 @@ impl Deref for Sender {
     }
 }
 
-/// Safety: `Sender` holds a shared file lock that ensures there's no reader, so `shm` can be safely written to.
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "`Sender` holds a shared file lock that ensures there's no reader, so `shm` can be safely written to"
+)]
+/// SAFETY: `Sender` holds a shared file lock that ensures there's no reader, so `shm` can be safely written to.
 unsafe impl Send for Sender {}
 
-/// Safety: `Sender` holds a shared file lock that ensures there's no reader, so `shm` can be safely written to.
+/// SAFETY: `Sender` holds a shared file lock that ensures there's no reader, so `shm` can be safely written to.
 unsafe impl Sync for Sender {}
 
 /// The unique receiver side of an IPC channel.
@@ -103,10 +123,14 @@ pub struct Receiver {
     shm: Shmem,
 }
 
-/// Safety: Receiver doesn't read or write `shm`. It only pass it to ReceiverLockGuard under the lock.
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "Receiver doesn't read or write `shm`. It only pass it to `ReceiverLockGuard` under the lock"
+)]
+/// SAFETY: `Receiver` doesn't read or write `shm`. It only passes it to `ReceiverLockGuard` under the lock.
 unsafe impl Send for Receiver {}
 
-/// Safety: Receiver doesn't read or write `shm`. It only pass it to ReceiverLockGuard under the lock.
+/// SAFETY: `Receiver` doesn't read or write `shm`. It only passes it to `ReceiverLockGuard` under the lock.
 unsafe impl Sync for Receiver {}
 
 impl Drop for Receiver {
@@ -125,9 +149,15 @@ impl Receiver {
 
     /// Lock the shared memory for unique read access.
     /// Blocks until all the senders have dropped (or processes owning them have all exited) so the shared memory can be safely read.
-    /// During the lifetime of returned `ReceiverReadGuard`, no new senders can be created (ChannelConf::sender would fail).
+    /// During the lifetime of returned `ReceiverReadGuard`, no new senders can be created (`ChannelConf::sender` would fail).
+    #[expect(
+        clippy::missing_errors_doc,
+        reason = "error conditions are self-evident from return type"
+    )]
     pub fn lock(&self) -> io::Result<ReceiverLockGuard<'_>> {
         self.lock_file.lock()?;
+        // SAFETY: The exclusive file lock is held, so no writers can access the shared memory.
+        // The lock ensures all prior writes are visible to this thread.
         let reader = ShmReader::new(unsafe { self.shm.as_slice() });
         Ok(ReceiverLockGuard { reader, lock_file: &self.lock_file })
     }
@@ -138,7 +168,7 @@ pub struct ReceiverLockGuard<'a> {
     lock_file: &'a File,
 }
 
-impl<'a> Drop for ReceiverLockGuard<'a> {
+impl Drop for ReceiverLockGuard<'_> {
     fn drop(&mut self) {
         if let Err(err) = self.lock_file.unlock() {
             debug!("Failed to unlock IPC lock file: {}", err);
@@ -183,6 +213,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::print_stdout, reason = "test diagnostics")]
     fn forbid_new_senders_after_locked() {
         let (conf, receiver) = channel(42).unwrap();
         let _lock = receiver.lock().unwrap();
@@ -195,6 +226,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::print_stdout, reason = "test diagnostics")]
     fn forbid_new_senders_after_receiver_dropped() {
         let (conf, receiver) = channel(42).unwrap();
         drop(receiver);

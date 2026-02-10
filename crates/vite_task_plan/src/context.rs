@@ -1,7 +1,6 @@
-use std::{
-    collections::HashMap, env::JoinPathsError, ffi::OsStr, fmt::Display, ops::Range, sync::Arc,
-};
+use std::{env::JoinPathsError, ffi::OsStr, fmt::Display, ops::Range, sync::Arc};
 
+use rustc_hash::FxHashMap;
 use vite_path::AbsolutePath;
 use vite_str::Str;
 use vite_task_graph::{IndexedTaskGraph, TaskNodeIndex, display::TaskDisplay};
@@ -27,7 +26,7 @@ pub struct PlanContext<'a> {
     cwd: Arc<AbsolutePath>,
 
     /// The environment variables for the current execution context.
-    envs: HashMap<Arc<OsStr>, Arc<OsStr>>,
+    envs: FxHashMap<Arc<OsStr>, Arc<OsStr>>,
 
     /// The callbacks for loading task graphs and parsing commands.
     callbacks: &'a mut (dyn PlanRequestParser + 'a),
@@ -47,7 +46,7 @@ pub struct PlanContext<'a> {
 pub struct TaskCallStackFrameDisplay {
     pub task_display: TaskDisplay,
 
-    #[expect(dead_code)] // To be used in terminal error display
+    #[expect(dead_code, reason = "to be used in terminal error display")]
     pub command_span: Range<usize>,
 }
 
@@ -76,7 +75,7 @@ impl Display for TaskCallStackDisplay {
             if i > 0 {
                 write!(f, " -> ")?;
             }
-            write!(f, "{}", frame)?;
+            write!(f, "{frame}")?;
         }
         Ok(())
     }
@@ -86,7 +85,7 @@ impl<'a> PlanContext<'a> {
     pub fn new(
         workspace_path: &'a Arc<AbsolutePath>,
         cwd: Arc<AbsolutePath>,
-        envs: HashMap<Arc<OsStr>, Arc<OsStr>>,
+        envs: FxHashMap<Arc<OsStr>, Arc<OsStr>>,
         callbacks: &'a mut (dyn PlanRequestParser + 'a),
         indexed_task_graph: &'a IndexedTaskGraph,
     ) -> Self {
@@ -97,11 +96,11 @@ impl<'a> PlanContext<'a> {
             callbacks,
             task_call_stack: Vec::new(),
             indexed_task_graph,
-            extra_args: Default::default(),
+            extra_args: Arc::default(),
         }
     }
 
-    pub fn envs(&self) -> &HashMap<Arc<OsStr>, Arc<OsStr>> {
+    pub const fn envs(&self) -> &FxHashMap<Arc<OsStr>, Arc<OsStr>> {
         &self.envs
     }
 
@@ -132,11 +131,11 @@ impl<'a> PlanContext<'a> {
         Ok(())
     }
 
-    pub fn indexed_task_graph(&self) -> &'a IndexedTaskGraph {
+    pub const fn indexed_task_graph(&self) -> &'a IndexedTaskGraph {
         self.indexed_task_graph
     }
 
-    pub fn workspace_path(&self) -> &Arc<AbsolutePath> {
+    pub const fn workspace_path(&self) -> &Arc<AbsolutePath> {
         self.workspace_path
     }
 
@@ -162,7 +161,7 @@ impl<'a> PlanContext<'a> {
         }
     }
 
-    pub fn extra_args(&self) -> &Arc<[Str]> {
+    pub const fn extra_args(&self) -> &Arc<[Str]> {
         &self.extra_args
     }
 

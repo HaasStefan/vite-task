@@ -1,7 +1,6 @@
-//! LabeledReporter event handler for rendering execution events.
+//! `LabeledReporter` event handler for rendering execution events.
 
 use std::{
-    collections::HashSet,
     io::Write,
     process::ExitStatus as StdExitStatus,
     sync::{Arc, LazyLock},
@@ -9,7 +8,9 @@ use std::{
 };
 
 use owo_colors::{Style, Styled};
+use rustc_hash::FxHashSet;
 use vite_path::AbsolutePath;
+use vite_str::Str;
 
 use super::{
     cache::{format_cache_status_inline, format_cache_status_summary},
@@ -61,7 +62,7 @@ struct ExecutionInfo {
     cache_status: CacheStatus, // Non-optional, determined at Start
     /// Exit status from the process. None means no process was spawned (cache hit or in-process).
     exit_status: Option<StdExitStatus>,
-    error_message: Option<String>,
+    error_message: Option<Str>,
 }
 
 /// Statistics for the execution summary
@@ -94,14 +95,14 @@ struct ExecutionStats {
 /// ## Simplified Summary for Single Tasks
 /// - When a single task is executed:
 ///   - Skips full summary (no Statistics/Task Details sections)
-///   - Shows only cache status (except for "NotFound" which is hidden for clean first-run output)
+///   - Shows only cache status (except for "`NotFound`" which is hidden for clean first-run output)
 ///   - Results in clean output showing just the command's stdout/stderr
 pub struct LabeledReporter<W: Write> {
     writer: W,
     workspace_path: Arc<AbsolutePath>,
     executions: Vec<ExecutionInfo>,
     stats: ExecutionStats,
-    first_error: Option<String>,
+    first_error: Option<Str>,
 
     /// When true, suppresses command line and output for cache hit executions
     silent_if_cache_hit: bool,
@@ -109,8 +110,8 @@ pub struct LabeledReporter<W: Write> {
     /// When true, skips printing the execution summary at the end
     hide_summary: bool,
 
-    /// Tracks which executions are cache hits (for silent_if_cache_hit mode)
-    cache_hit_executions: HashSet<ExecutionId>,
+    /// Tracks which executions are cache hits (for `silent_if_cache_hit` mode)
+    cache_hit_executions: FxHashSet<ExecutionId>,
 }
 
 impl<W: Write> LabeledReporter<W> {
@@ -123,17 +124,17 @@ impl<W: Write> LabeledReporter<W> {
             first_error: None,
             silent_if_cache_hit: false,
             hide_summary: false,
-            cache_hit_executions: HashSet::new(),
+            cache_hit_executions: FxHashSet::default(),
         }
     }
 
-    /// Set the silent_if_cache_hit option
-    pub fn set_silent_if_cache_hit(&mut self, silent_if_cache_hit: bool) {
+    /// Set the `silent_if_cache_hit` option
+    pub const fn set_silent_if_cache_hit(&mut self, silent_if_cache_hit: bool) {
         self.silent_if_cache_hit = silent_if_cache_hit;
     }
 
-    /// Set the hide_summary option
-    pub fn set_hide_summary(&mut self, hide_summary: bool) {
+    /// Set the `hide_summary` option
+    pub const fn set_hide_summary(&mut self, hide_summary: bool) {
         self.hide_summary = hide_summary;
     }
 
@@ -170,14 +171,17 @@ impl<W: Write> LabeledReporter<W> {
 
         // Compute cwd relative to workspace root
         let cwd_relative = if let Ok(Some(rel)) = display.cwd.strip_prefix(&self.workspace_path) {
-            rel.as_str().to_string()
+            Str::from(rel.as_str())
         } else {
-            String::new()
+            Str::default()
         };
 
-        let cwd_str =
-            if cwd_relative.is_empty() { String::new() } else { format!("~/{cwd_relative}") };
-        let command_str = format!("{cwd_str}$ {}", display.command);
+        let cwd_str = if cwd_relative.is_empty() {
+            Str::default()
+        } else {
+            vite_str::format!("~/{cwd_relative}")
+        };
+        let command_str = vite_str::format!("{cwd_str}$ {}", display.command);
 
         // Skip printing if silent_if_cache_hit is enabled and this is a cache hit
         let should_print =
@@ -209,7 +213,7 @@ impl<W: Write> LabeledReporter<W> {
         });
     }
 
-    fn handle_error(&mut self, _execution_id: ExecutionId, message: String) {
+    fn handle_error(&mut self, _execution_id: ExecutionId, message: Str) {
         // Display error inline (in red, with error icon)
         let _ = writeln!(
             self.writer,
@@ -244,17 +248,18 @@ impl<W: Write> LabeledReporter<W> {
         }
 
         // For direct synthetic execution with cache hit, print message at the bottom
-        if let Some(exec) = self.executions.last() {
-            if exec.display.is_none() && matches!(exec.cache_status, CacheStatus::Hit { .. }) {
-                let should_print =
-                    !self.silent_if_cache_hit || !self.cache_hit_executions.contains(&execution_id);
-                if should_print {
-                    let _ = writeln!(
-                        self.writer,
-                        "{}",
-                        "✓ cache hit, logs replayed".style(Style::new().green().dimmed())
-                    );
-                }
+        if let Some(exec) = self.executions.last()
+            && exec.display.is_none()
+            && matches!(exec.cache_status, CacheStatus::Hit { .. })
+        {
+            let should_print =
+                !self.silent_if_cache_hit || !self.cache_hit_executions.contains(&execution_id);
+            if should_print {
+                let _ = writeln!(
+                    self.writer,
+                    "{}",
+                    "✓ cache hit, logs replayed".style(Style::new().green().dimmed())
+                );
             }
         }
 
@@ -266,6 +271,10 @@ impl<W: Write> LabeledReporter<W> {
     }
 
     /// Print execution summary after all events
+    #[expect(
+        clippy::too_many_lines,
+        reason = "summary formatting is inherently verbose with many write calls"
+    )]
     pub fn print_summary(&mut self) {
         let total = self.executions.len();
         let cache_hits = self.stats.cache_hits;
@@ -296,17 +305,19 @@ impl<W: Write> LabeledReporter<W> {
 
         // Print statistics
         let cache_disabled_str = if cache_disabled > 0 {
-            format!("• {cache_disabled} cache disabled")
-                .style(Style::new().bright_black())
-                .to_string()
+            Str::from(
+                vite_str::format!("• {cache_disabled} cache disabled")
+                    .style(Style::new().bright_black())
+                    .to_string(),
+            )
         } else {
-            String::new()
+            Str::default()
         };
 
         let failed_str = if failed > 0 {
-            format!("• {failed} failed").style(Style::new().red()).to_string()
+            Str::from(vite_str::format!("• {failed} failed").style(Style::new().red()).to_string())
         } else {
-            String::new()
+            Str::default()
         };
 
         // Build statistics line, only including non-empty parts
@@ -315,21 +326,32 @@ impl<W: Write> LabeledReporter<W> {
             self.writer,
             "{}  {} {} {} ",
             "Statistics:".style(Style::new().bold()),
-            format!(" {total} tasks").style(Style::new().bright_white()),
-            format!("• {cache_hits} cache hits").style(Style::new().green()),
-            format!("• {cache_misses} cache misses").style(CACHE_MISS_STYLE),
+            vite_str::format!(" {total} tasks").style(Style::new().bright_white()),
+            vite_str::format!("• {cache_hits} cache hits").style(Style::new().green()),
+            vite_str::format!("• {cache_misses} cache misses").style(CACHE_MISS_STYLE),
         );
         if !cache_disabled_str.is_empty() {
-            let _ = write!(self.writer, "{} ", cache_disabled_str);
+            let _ = write!(self.writer, "{cache_disabled_str} ");
         }
         if !failed_str.is_empty() {
-            let _ = write!(self.writer, "{} ", failed_str);
+            let _ = write!(self.writer, "{failed_str} ");
         }
         let _ = writeln!(self.writer);
 
         // Calculate cache hit rate
         let cache_rate = if total > 0 {
-            (f64::from(cache_hits as u32) / total as f64 * 100.0) as u32
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "percentage is always 0..=100, fits in u32"
+            )]
+            #[expect(clippy::cast_sign_loss, reason = "percentage is always non-negative")]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "acceptable precision loss for display percentage"
+            )]
+            {
+                (f64::from(cache_hits as u32) / total as f64 * 100.0) as u32
+            }
         } else {
             0
         };
@@ -390,20 +412,23 @@ impl<W: Write> LabeledReporter<W> {
             let _ = write!(
                 self.writer,
                 "  {} {}",
-                format!("[{}]", idx + 1).style(Style::new().bright_black()),
+                vite_str::format!("[{}]", idx + 1).style(Style::new().bright_black()),
                 task_display.to_string().style(Style::new().bright_white().bold())
             );
 
             // Command with cwd prefix
             let cwd_relative = if let Ok(Some(rel)) = display.cwd.strip_prefix(&self.workspace_path)
             {
-                rel.as_str().to_string()
+                Str::from(rel.as_str())
             } else {
-                String::new()
+                Str::default()
             };
-            let cwd_str =
-                if cwd_relative.is_empty() { String::new() } else { format!("~/{cwd_relative}") };
-            let command_display = format!("{cwd_str}$ {}", display.command);
+            let cwd_str = if cwd_relative.is_empty() {
+                Str::default()
+            } else {
+                vite_str::format!("~/{cwd_relative}")
+            };
+            let command_display = vite_str::format!("{cwd_str}$ {}", display.command);
             let _ = write!(self.writer, ": {}", command_display.style(COMMAND_STYLE));
 
             // Execution result icon
@@ -416,12 +441,12 @@ impl<W: Write> LabeledReporter<W> {
                     let _ = write!(self.writer, " {}", "✓".style(Style::new().green().bold()));
                 }
                 Some(status) => {
-                    let code = exit_status_to_code(status);
+                    let code = exit_status_to_code(*status);
                     let _ = write!(
                         self.writer,
                         " {} {}",
                         "✗".style(Style::new().red().bold()),
-                        format!("(exit code: {code})").style(Style::new().red())
+                        vite_str::format!("(exit code: {code})").style(Style::new().red())
                     );
                 }
             }
@@ -434,7 +459,7 @@ impl<W: Write> LabeledReporter<W> {
                 CacheStatus::Miss(_) => cache_summary.style(CACHE_MISS_STYLE),
                 CacheStatus::Disabled(_) => cache_summary.style(Style::new().bright_black()),
             };
-            let _ = writeln!(self.writer, "      {}", styled_summary);
+            let _ = writeln!(self.writer, "      {styled_summary}");
 
             // Error message if present
             if let Some(ref error_msg) = exec.error_message {
@@ -466,9 +491,13 @@ impl<W: Write> LabeledReporter<W> {
 
     /// Print simplified cache status for single built-in commands
     ///
-    /// Note: Inline cache status is now printed at Start event in handle_start(),
+    /// Note: Inline cache status is now printed at Start event in `handle_start()`,
     /// so this function is a no-op to avoid duplicate output.
-    fn print_simple_cache_status(&mut self) {
+    #[expect(
+        clippy::unused_self,
+        reason = "method signature kept for API consistency with print_summary"
+    )]
+    const fn print_simple_cache_status(&self) {
         // Inline cache status already printed at Start event - nothing to do here
     }
 }
@@ -548,13 +577,17 @@ impl<W: Write> Reporter for LabeledReporter<W> {
             .iter()
             .filter_map(|exec| exec.exit_status.as_ref())
             .filter(|status| !status.success())
-            .map(exit_status_to_code)
+            .map(|status| exit_status_to_code(*status))
             .collect();
 
         match failed_exit_codes.as_slice() {
             [] => Ok(()),
             [code] => {
                 // Return the single failed task's exit code (clamped to u8 range)
+                #[expect(
+                    clippy::cast_sign_loss,
+                    reason = "value is clamped to 1..=255, always positive"
+                )]
                 Err(ExitStatus((*code).clamp(1, 255) as u8))
             }
             _ => Err(ExitStatus::FAILURE),

@@ -20,11 +20,11 @@ pub struct InProcessExecution {
 
 impl InProcessExecution {
     /// Execute the in-process execution and return the output.
-    pub async fn execute(&self) -> InProcessExecutionOutput {
+    pub fn execute(&self) -> InProcessExecutionOutput {
         match &self.kind {
             InProcessExecutionKind::Echo { strings, trailing_newline } => {
                 let mut stdout = Vec::new();
-                for s in strings.iter() {
+                for s in strings {
                     stdout.extend_from_slice(s.as_bytes());
                     stdout.push(b' ');
                 }
@@ -59,6 +59,10 @@ impl InProcessExecution {
         match name {
             "echo" => {
                 let mut strings = Vec::new();
+                #[expect(
+                    clippy::option_if_let_else,
+                    reason = "side effect (push to strings) makes map_or unsuitable"
+                )]
                 let trailing_newline = if let Some(first_arg) = args.next() {
                     let first_arg = first_arg.as_ref();
                     if first_arg == "-n" {
@@ -71,9 +75,7 @@ impl InProcessExecution {
                     true
                 };
                 strings.extend(args.map(|s| s.as_ref().into()));
-                Some(InProcessExecution {
-                    kind: InProcessExecutionKind::Echo { strings, trailing_newline },
-                })
+                Some(Self { kind: InProcessExecutionKind::Echo { strings, trailing_newline } })
             }
             _ => None,
         }

@@ -1,4 +1,10 @@
 #![cfg(unix)]
+#![allow(
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "non-vite crate"
+)]
 
 pub mod exec;
 pub(crate) mod open_exec;

@@ -33,7 +33,7 @@ pub struct PostRunFingerprint {
 pub enum PathFingerprint {
     /// Path was not found when fingerprinting
     NotFound,
-    /// File content hash using xxHash3_64
+    /// File content hash using `xxHash3_64`
     FileContentHash(u64),
     /// Directory with optional entry listing.
     /// `Folder(None)` means the directory was opened but entries were not read
@@ -88,11 +88,7 @@ impl PostRunFingerprint {
             .par_iter()
             .filter(|(path, _)| {
                 // Apply ignore patterns if present
-                if let Some(ref matcher) = ignore_matcher {
-                    !matcher.is_match(path.as_str())
-                } else {
-                    true
-                }
+                ignore_matcher.as_ref().is_none_or(|matcher| !matcher.is_match(path.as_str()))
             })
             .map(|(relative_path, path_read)| {
                 let full_path = Arc::<AbsolutePath>::from(base_dir.join(relative_path));
@@ -132,7 +128,7 @@ impl PostRunFingerprint {
     }
 }
 
-/// Hash file content using xxHash3_64
+/// Hash file content using `xxHash3_64`
 fn hash_content(mut stream: impl Read) -> io::Result<u64> {
     let mut hasher = twox_hash::XxHash3_64::default();
     let mut buf = [0u8; 8192];
@@ -160,7 +156,6 @@ pub fn fingerprint_path(
 
     let file = match File::open(std_path) {
         Ok(file) => file,
-        #[allow(unused)]
         Err(err) => {
             // On Windows, File::open fails specifically for directories with PermissionDenied
             #[cfg(windows)]
@@ -195,7 +190,7 @@ pub fn fingerprint_path(
         // Is a directory on Unix - use the optimized nix implementation
         #[cfg(unix)]
         {
-            return process_directory_unix(reader.into_inner(), path_read);
+            return process_directory_unix(reader.get_ref(), path_read);
         }
         #[cfg(windows)]
         {
@@ -205,8 +200,9 @@ pub fn fingerprint_path(
     Ok(PathFingerprint::FileContentHash(hash_content(reader)?))
 }
 
-/// Process a directory on Windows using std::fs::read_dir
+/// Process a directory on Windows using `std::fs::read_dir`
 #[cfg(windows)]
+#[expect(clippy::disallowed_types, reason = "Windows fallback uses std::path::Path directly")]
 fn process_directory(
     path: &std::path::Path,
     path_read: PathRead,
@@ -243,7 +239,7 @@ fn process_directory(
 
 /// Process a directory on Unix using nix for efficiency
 #[cfg(unix)]
-fn process_directory_unix(file: File, path_read: PathRead) -> anyhow::Result<PathFingerprint> {
+fn process_directory_unix(file: &File, path_read: PathRead) -> anyhow::Result<PathFingerprint> {
     use std::os::fd::AsFd;
 
     if !path_read.read_dir_entries {
@@ -263,13 +259,16 @@ fn process_directory_unix(file: File, path_read: PathRead) -> anyhow::Result<Pat
         }
 
         let kind = match entry.file_type() {
-            Some(nix::dir::Type::File) => DirEntryKind::File,
             Some(nix::dir::Type::Directory) => DirEntryKind::Dir,
             Some(nix::dir::Type::Symlink) => DirEntryKind::Symlink,
-            // Treat other types as files for fingerprinting
+            // Treat files and other types as files for fingerprinting
             _ => DirEntryKind::File,
         };
 
+        #[expect(
+            clippy::disallowed_types,
+            reason = "from_utf8_lossy returns Cow referencing String"
+        )]
         let name_str = String::from_utf8_lossy(name);
         entries.insert(Str::from(name_str.as_ref()), kind);
     }

@@ -8,12 +8,7 @@ mod path_env;
 mod plan;
 pub mod plan_request;
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    ffi::OsStr,
-    fmt::Debug,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, ffi::OsStr, fmt::Debug, sync::Arc};
 
 use context::PlanContext;
 use error::TaskPlanErrorKindResultExt;
@@ -23,6 +18,7 @@ use in_process::InProcessExecution;
 pub use path_env::{get_path_env, prepend_path_env};
 use plan::{plan_query_request, plan_synthetic_request};
 use plan_request::{PlanRequest, SyntheticPlanRequest};
+use rustc_hash::FxHashMap;
 use serde::{Serialize, ser::SerializeMap as _};
 use vite_graph_ser::serialize_by_key;
 use vite_path::AbsolutePath;
@@ -30,6 +26,7 @@ use vite_str::Str;
 use vite_task_graph::{TaskGraphLoadError, display::TaskDisplay};
 
 /// A resolved spawn execution.
+///
 /// Unlike tasks in `vite_task_graph`, this struct contains all information needed for execution,
 /// like resolved environment variables, current working directory, and additional args from cli.
 #[derive(Debug, Serialize)]
@@ -88,6 +85,10 @@ pub struct TaskExecution {
 impl vite_graph_ser::GetKey for TaskExecution {
     type Key<'a> = (&'a AbsolutePath, &'a str);
 
+    #[expect(
+        clippy::disallowed_types,
+        reason = "vite_graph_ser::GetKey uses String in its trait definition"
+    )]
     fn key(&self) -> Result<Self::Key<'_>, String> {
         Ok((&self.task_display.package_path, &self.task_display.task_name))
     }
@@ -131,15 +132,20 @@ pub struct ExecutionItem {
 
 /// The kind of a leaf execution item, which cannot be expanded further.
 #[derive(Debug, Serialize)]
+#[expect(clippy::large_enum_variant, reason = "SpawnExecution is large but not worth boxing")]
 pub enum LeafExecutionKind {
     /// The execution is a spawn of a child process
     Spawn(SpawnExecution),
-    /// The execution is done in-process by InProcessExecution::execute()
+    /// The execution is done in-process by `InProcessExecution::execute()`
     InProcess(InProcessExecution),
 }
 
 /// An execution item, from a split subcommand in a task's command (`item1 && item2 && ...`).
 #[derive(Debug, Serialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "variants are used in-place, boxing would add indirection"
+)]
 pub enum ExecutionItemKind {
     /// Expanded from a known vp subcommand, like `vp run ...` or a synthesized task.
     Expanded(#[serde(serialize_with = "serialize_by_key")] ExecutionGraph),
@@ -181,15 +187,21 @@ pub struct ExecutionPlan {
 }
 
 impl ExecutionPlan {
-    pub fn root_node(&self) -> &ExecutionItemKind {
+    #[must_use]
+    pub const fn root_node(&self) -> &ExecutionItemKind {
         &self.root_node
     }
 
+    /// Plan an execution from a plan request.
+    ///
+    /// # Errors
+    /// Returns an error if task graph loading, query, or execution planning fails.
+    #[expect(clippy::future_not_send, reason = "PlanRequestParser and TaskGraphLoader are !Send")]
     pub async fn plan(
         plan_request: PlanRequest,
         workspace_path: &Arc<AbsolutePath>,
         cwd: &Arc<AbsolutePath>,
-        envs: &HashMap<Arc<OsStr>, Arc<OsStr>>,
+        envs: &FxHashMap<Arc<OsStr>, Arc<OsStr>>,
         plan_request_parser: &mut (dyn PlanRequestParser + '_),
         task_graph_loader: &mut (dyn TaskGraphLoader + '_),
     ) -> Result<Self, Error> {
@@ -198,7 +210,7 @@ impl ExecutionPlan {
                 let indexed_task_graph = task_graph_loader
                     .load_task_graph()
                     .await
-                    .map_err(|load_error| TaskPlanErrorKind::TaskGraphLoadError(load_error))
+                    .map_err(TaskPlanErrorKind::TaskGraphLoadError)
                     .with_empty_call_stack()?;
 
                 let context = PlanContext::new(
@@ -206,7 +218,7 @@ impl ExecutionPlan {
                     Arc::clone(cwd),
                     envs.clone(),
                     plan_request_parser,
-                    &indexed_task_graph,
+                    indexed_task_graph,
                 );
                 let execution_graph = plan_query_request(query_plan_request, context).await?;
                 ExecutionItemKind::Expanded(execution_graph)
@@ -214,7 +226,7 @@ impl ExecutionPlan {
             PlanRequest::Synthetic(synthetic_plan_request) => {
                 let execution = plan_synthetic_request(
                     workspace_path,
-                    &Default::default(),
+                    &BTreeMap::default(),
                     synthetic_plan_request,
                     None,
                     cwd,
@@ -226,6 +238,11 @@ impl ExecutionPlan {
         Ok(Self { root_node })
     }
 
+    /// Plan a synthetic task execution.
+    ///
+    /// # Errors
+    /// Returns an error if the program is not found or path fingerprinting fails.
+    #[expect(clippy::result_large_err, reason = "Error contains task call stack for diagnostics")]
     pub fn plan_synthetic(
         workspace_path: &Arc<AbsolutePath>,
         cwd: &Arc<AbsolutePath>,
@@ -235,7 +252,7 @@ impl ExecutionPlan {
         let execution_cache_key = cache_metadata::ExecutionCacheKey::ExecAPI(cache_key);
         let execution = plan_synthetic_request(
             workspace_path,
-            &Default::default(),
+            &BTreeMap::default(),
             synthetic_plan_request,
             Some(execution_cache_key),
             cwd,

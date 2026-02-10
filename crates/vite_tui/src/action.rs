@@ -1,4 +1,4 @@
-#[expect(unused)]
+#[expect(unused, reason = "TUI actions defined for future use")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Tick,
@@ -8,8 +8,8 @@ pub enum Action {
     Resume,
     Quit,
     ClearScreen,
-    Error(String),
-    Task { task: String, bytes: Box<[u8]> },
+    Error(Box<str>),
+    Task { task: Box<str>, bytes: Box<[u8]> },
     Up,
     Down,
     SelectTask(usize),

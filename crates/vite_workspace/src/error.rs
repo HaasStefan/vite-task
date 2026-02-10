@@ -1,4 +1,9 @@
-use std::{io, path::Path, sync::Arc};
+#[expect(
+    clippy::disallowed_types,
+    reason = "StripPrefixError carries a raw &Path that may not be valid UTF-8, so it can't use vite_path types"
+)]
+use std::path::Path;
+use std::{io, sync::Arc};
 
 use vite_path::{
     AbsolutePath, AbsolutePathBuf, RelativePathBuf, absolute::StripPrefixError,
@@ -19,6 +24,10 @@ pub enum Error {
 
     #[error(
         "The stripped path ({stripped_path:?}) is not a valid relative path because: {invalid_path_data_error}"
+    )]
+    #[expect(
+        clippy::disallowed_types,
+        reason = "stripped path may not be valid UTF-8, so it can't use vite_path types"
     )]
     StripPath { stripped_path: Box<Path>, invalid_path_data_error: InvalidPathDataError },
 

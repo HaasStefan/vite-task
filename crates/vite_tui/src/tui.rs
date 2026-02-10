@@ -23,7 +23,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 
-#[expect(unused)]
+#[expect(unused, reason = "TUI event variants defined for future use")]
 #[derive(Clone, Debug)]
 pub enum Event {
     Init,
@@ -34,6 +34,7 @@ pub enum Event {
     Render,
     FocusGained,
     FocusLost,
+    #[expect(clippy::disallowed_types, reason = "crossterm provides paste content as String")]
     Paste(String),
     Key(KeyEvent),
     Mouse(MouseEvent),

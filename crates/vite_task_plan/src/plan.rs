@@ -1,13 +1,18 @@
+#[expect(
+    clippy::disallowed_types,
+    reason = "Path is needed for cd command argument and error reporting"
+)]
+use std::path::Path;
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     env::home_dir,
     ffi::OsStr,
-    path::{Path, PathBuf},
     sync::{Arc, LazyLock},
 };
 
 use futures_util::FutureExt;
+use rustc_hash::FxHashMap;
 use vite_path::{AbsolutePath, AbsolutePathBuf, RelativePathBuf, relative::InvalidPathDataError};
 use vite_shell::try_parse_as_and_list;
 use vite_str::Str;
@@ -34,7 +39,7 @@ use crate::{
 /// Locate the executable path for a given program name in the provided envs and cwd.
 fn which(
     program: &Arc<OsStr>,
-    envs: &HashMap<Arc<OsStr>, Arc<OsStr>>,
+    envs: &FxHashMap<Arc<OsStr>, Arc<OsStr>>,
     cwd: &Arc<AbsolutePath>,
 ) -> Result<Arc<AbsolutePath>, crate::error::WhichError> {
     let path_env = get_path_env(envs);
@@ -51,6 +56,8 @@ fn which(
         .into())
 }
 
+#[expect(clippy::too_many_lines, reason = "sequential planning steps are clearer in one function")]
+#[expect(clippy::future_not_send, reason = "PlanContext contains !Send dyn PlanRequestParser")]
 async fn plan_task_as_execution_node(
     task_node_index: TaskNodeIndex,
     mut context: PlanContext<'_>,
@@ -99,6 +106,10 @@ async fn plan_task_as_execution_node(
 
             // Handle `cd` builtin command
             if and_item.program == "cd" {
+                #[expect(
+                    clippy::disallowed_types,
+                    reason = "Path is needed for std::env::home_dir return type and AbsolutePath::join"
+                )]
                 let cd_target: Cow<'_, Path> = match args.as_slice() {
                     // No args, go to home directory
                     [] => home_dir()
@@ -159,7 +170,7 @@ async fn plan_task_as_execution_node(
             };
 
             // Try to parse the args of an and_item to a plan request like `run -r build`
-            let envs: Arc<HashMap<Arc<OsStr>, Arc<OsStr>>> = context.envs().clone().into();
+            let envs: Arc<FxHashMap<Arc<OsStr>, Arc<OsStr>>> = context.envs().clone().into();
             let mut script_command = ScriptCommand {
                 program: and_item.program.clone(),
                 args: args.into(),
@@ -223,6 +234,23 @@ async fn plan_task_as_execution_node(
             items.push(ExecutionItem { execution_item_display, kind: execution_item_kind });
         }
     } else {
+        #[expect(clippy::disallowed_types, reason = "PathBuf needed for which fallback path")]
+        static SHELL_PROGRAM_PATH: LazyLock<Arc<AbsolutePath>> =
+            LazyLock::new(|| {
+                if cfg!(target_os = "windows") {
+                    AbsolutePathBuf::new(which::which("cmd.exe").unwrap_or_else(|_| {
+                        std::path::PathBuf::from("C:\\Windows\\System32\\cmd.exe")
+                    }))
+                    .unwrap()
+                    .into()
+                } else {
+                    AbsolutePath::new("/bin/sh").unwrap().into()
+                }
+            });
+
+        static SHELL_ARGS: &[&str] =
+            if cfg!(target_os = "windows") { &["/d", "/s", "/c"] } else { &["-c"] };
+
         let mut context = context.duplicate();
         context.push_stack_frame(task_node_index, 0..command_str.len());
 
@@ -232,22 +260,6 @@ async fn plan_task_as_execution_node(
             cwd,
             task_display: task_node.task_display.clone(),
         };
-
-        static SHELL_PROGRAM_PATH: LazyLock<Arc<AbsolutePath>> = LazyLock::new(|| {
-            if cfg!(target_os = "windows") {
-                AbsolutePathBuf::new(
-                    which::which("cmd.exe")
-                        .unwrap_or_else(|_| PathBuf::from("C:\\Windows\\System32\\cmd.exe")),
-                )
-                .unwrap()
-                .into()
-            } else {
-                AbsolutePath::new("/bin/sh").unwrap().into()
-            }
-        });
-
-        static SHELL_ARGS: &[&str] =
-            if cfg!(target_os = "windows") { &["/d", "/s", "/c"] } else { &["-c"] };
 
         let mut script = Str::from(command_str);
         for arg in context.extra_args().iter() {
@@ -274,7 +286,7 @@ async fn plan_task_as_execution_node(
             &task_node.resolved_config.resolved_options,
             context.envs(),
             Arc::clone(&*SHELL_PROGRAM_PATH),
-            Arc::from_iter(SHELL_ARGS.iter().map(|s| Str::from(*s)).chain(std::iter::once(script))),
+            SHELL_ARGS.iter().map(|s| Str::from(*s)).chain(std::iter::once(script)).collect(),
         )
         .with_plan_context(&context)?;
         items.push(ExecutionItem {
@@ -286,6 +298,7 @@ async fn plan_task_as_execution_node(
     Ok(TaskExecution { task_display: task_node.task_display.clone(), items })
 }
 
+#[expect(clippy::result_large_err, reason = "TaskPlanErrorKind is large for diagnostics")]
 pub fn plan_synthetic_request(
     workspace_path: &Arc<AbsolutePath>,
     prefix_envs: &BTreeMap<Str, Str>,
@@ -303,7 +316,7 @@ pub fn plan_synthetic_request(
             cwd_relative_to_package: None,
             depends_on: None,
         },
-        &cwd,
+        cwd,
     );
 
     plan_spawn_execution(
@@ -321,7 +334,7 @@ fn strip_prefix_for_cache(
     path: &Arc<AbsolutePath>,
     workspace_path: &Arc<AbsolutePath>,
 ) -> Result<RelativePathBuf, PathFingerprintErrorKind> {
-    match path.strip_prefix(&*workspace_path) {
+    match path.strip_prefix(workspace_path) {
         Ok(Some(rel_path)) => Ok(rel_path),
         Ok(None) => Err(PathFingerprintErrorKind::PathOutsideWorkspace {
             path: Arc::clone(path),
@@ -334,12 +347,17 @@ fn strip_prefix_for_cache(
     }
 }
 
+#[expect(clippy::result_large_err, reason = "TaskPlanErrorKind is large for diagnostics")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "program_path ownership is needed for Arc construction"
+)]
 fn plan_spawn_execution(
     workspace_path: &Arc<AbsolutePath>,
     execution_cache_key: Option<ExecutionCacheKey>,
     prefix_envs: &BTreeMap<Str, Str>,
     resolved_task_options: &ResolvedTaskOptions,
-    envs: &HashMap<Arc<OsStr>, Arc<OsStr>>,
+    envs: &FxHashMap<Arc<OsStr>, Arc<OsStr>>,
     program_path: Arc<AbsolutePath>,
     args: Arc<[Str]>,
 ) -> Result<SpawnExecution, TaskPlanErrorKind> {
@@ -365,15 +383,26 @@ fn plan_spawn_execution(
             }
             Err(PathFingerprintErrorKind::PathOutsideWorkspace { path, .. }) => {
                 let program_name_os_str = path.as_path().file_name().unwrap_or_default();
-                let Some(program_name_str) = program_name_os_str.to_str() else {
-                    return Err(PathFingerprintError {
-                        kind: PathFingerprintErrorKind::NonPortableRelativePath {
-                            path: Path::new(program_name_os_str).into(),
-                            error: InvalidPathDataError::NonUtf8,
-                        },
-                        path_type: PathType::Program,
+                #[expect(
+                    clippy::manual_let_else,
+                    reason = "? operator doesn't apply since early return has a different error type"
+                )]
+                let program_name_str = match program_name_os_str.to_str() {
+                    Some(s) => s,
+                    None => {
+                        #[expect(
+                            clippy::disallowed_types,
+                            reason = "Arc<Path> for non-UTF-8 path data in error"
+                        )]
+                        return Err(PathFingerprintError {
+                            kind: PathFingerprintErrorKind::NonPortableRelativePath {
+                                path: Path::new(program_name_os_str).into(),
+                                error: InvalidPathDataError::NonUtf8,
+                            },
+                            path_type: PathType::Program,
+                        }
+                        .into());
                     }
-                    .into());
                 };
                 ProgramFingerprint::OutsideWorkspace { program_name: program_name_str.into() }
             }
@@ -392,7 +421,7 @@ fn plan_spawn_execution(
         };
         if let Some(execution_cache_key) = execution_cache_key {
             resolved_cache_metadata =
-                Some(CacheMetadata { execution_cache_key, spawn_fingerprint });
+                Some(CacheMetadata { spawn_fingerprint, execution_cache_key });
         }
     }
 
@@ -413,6 +442,7 @@ fn plan_spawn_execution(
 }
 
 /// Expand the parsed task request (like `run -r build`/`lint`) into an execution graph.
+#[expect(clippy::future_not_send, reason = "PlanContext contains !Send dyn PlanRequestParser")]
 pub async fn plan_query_request(
     query_plan_request: QueryPlanRequest,
     mut context: PlanContext<'_>,
@@ -426,8 +456,9 @@ pub async fn plan_query_request(
         .with_plan_context(&context)?;
 
     let mut execution_node_indices_by_task_index =
-        HashMap::<TaskNodeIndex, ExecutionNodeIndex>::with_capacity(
+        FxHashMap::<TaskNodeIndex, ExecutionNodeIndex>::with_capacity_and_hasher(
             task_node_index_graph.node_count(),
+            rustc_hash::FxBuildHasher,
         );
 
     let mut execution_graph = ExecutionGraph::with_capacity(

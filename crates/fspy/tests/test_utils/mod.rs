@@ -1,10 +1,25 @@
 use std::path::{Path, PathBuf, StripPrefixError};
 
 use fspy::{AccessMode, PathAccessIterable};
+// Used by the track_child! macro; not all test files use this macro
 #[doc(hidden)]
-#[allow(unused)]
+#[expect(
+    clippy::useless_attribute,
+    reason = "allow attribute on re-export required for macro usage"
+)]
+#[expect(
+    clippy::allow_attributes,
+    reason = "allow attribute on re-export required for macro usage"
+)]
+#[allow(
+    unused_imports,
+    reason = "used by track_child! macro; not all test files use this macro"
+)]
 pub use fspy_test_utils::command_executing;
 
+/// # Panics
+///
+/// Panics if the expected path access is not found or has the wrong mode.
 #[track_caller]
 pub fn assert_contains(
     accesses: &PathAccessIterable,
@@ -34,8 +49,8 @@ pub fn assert_contains(
     assert_eq!(
         expected_mode,
         actual_mode,
-        "Expected to find access to path {:?} with mode {:?}, but it was not found in: {:?}",
-        expected_path,
+        "Expected to find access to path {} with mode {:?}, but it was not found in: {:?}",
+        expected_path.display(),
         expected_mode,
         accesses.iter().collect::<Vec<_>>()
     );
@@ -49,8 +64,13 @@ macro_rules! track_child {
     }};
 }
 
+// Used by the track_child! macro; not all test files use this macro
 #[doc(hidden)]
-#[allow(unused)]
+#[expect(
+    clippy::allow_attributes,
+    reason = "allow attribute required for conditionally-used helper"
+)]
+#[allow(dead_code, reason = "used by track_child! macro; not all test files use this macro")]
 pub async fn spawn_std(std_cmd: std::process::Command) -> anyhow::Result<PathAccessIterable> {
     let mut command = fspy::Command::new(std_cmd.get_program());
     command

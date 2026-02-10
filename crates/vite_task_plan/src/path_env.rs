@@ -1,17 +1,19 @@
 use std::{
-    collections::HashMap,
     env::{JoinPathsError, join_paths, split_paths},
     ffi::OsStr,
     iter,
     sync::Arc,
 };
 
+use rustc_hash::FxHashMap;
 use vite_path::AbsolutePath;
 
 /// Get the PATH environment variable from the given envs map.
 /// On Windows, this function performs a case-insensitive search for "PATH".
 /// On Unix, it performs a case-sensitive search.
-pub fn get_path_env(envs: &HashMap<Arc<OsStr>, Arc<OsStr>>) -> Option<&Arc<OsStr>> {
+#[must_use]
+#[expect(clippy::implicit_hasher, reason = "function is specific to FxHashMap")]
+pub fn get_path_env(envs: &FxHashMap<Arc<OsStr>, Arc<OsStr>>) -> Option<&Arc<OsStr>> {
     if cfg!(windows) {
         // On Windows, environment variable names are case-insensitive (e.g., "PATH", "Path", "path" are all the same)
         // However, Rust's HashMap keys are case-sensitive, so we need to find the existing PATH variable
@@ -27,8 +29,13 @@ pub fn get_path_env(envs: &HashMap<Arc<OsStr>, Arc<OsStr>>) -> Option<&Arc<OsStr
     }
 }
 
+/// Prepend a path to the PATH environment variable.
+///
+/// # Errors
+/// Returns an error if the paths cannot be joined.
+#[expect(clippy::implicit_hasher, reason = "function is specific to FxHashMap")]
 pub fn prepend_path_env(
-    envs: &mut HashMap<Arc<OsStr>, Arc<OsStr>>,
+    envs: &mut FxHashMap<Arc<OsStr>, Arc<OsStr>>,
     path_to_prepend: &AbsolutePath,
 ) -> Result<(), JoinPathsError> {
     // Add node_modules/.bin to PATH
@@ -66,7 +73,7 @@ pub fn prepend_path_env(
 mod tests {
     use super::*;
 
-    fn create_test_envs(pairs: Vec<(&str, &str)>) -> HashMap<Arc<OsStr>, Arc<OsStr>> {
+    fn create_test_envs(pairs: Vec<(&str, &str)>) -> FxHashMap<Arc<OsStr>, Arc<OsStr>> {
         pairs
             .into_iter()
             .map(|(k, v)| (Arc::from(OsStr::new(k)), Arc::from(OsStr::new(v))))
@@ -92,11 +99,12 @@ mod tests {
         assert!(path_value.to_str().unwrap().contains("C:\\existing\\path"));
 
         // Verify no duplicate PATH entry was created
-        let path_like_keys: Vec<_> = envs
-            .keys()
-            .filter(|k| k.to_str().map(|s| s.eq_ignore_ascii_case("path")).unwrap_or(false))
-            .collect();
-        assert_eq!(path_like_keys.len(), 1);
+        assert_eq!(
+            envs.keys()
+                .filter(|k| k.to_str().is_some_and(|s| s.eq_ignore_ascii_case("path")))
+                .count(),
+            1
+        );
     }
 
     #[test]

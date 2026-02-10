@@ -68,7 +68,7 @@ fn assert_alignment(ptr: *const u8) {
     assert_eq!((ptr as usize + size_of::<usize>()) % align_of::<i32>(), 0);
 }
 
-fn roundup_to_align_frame_header(mut size: usize) -> usize {
+const fn roundup_to_align_frame_header(mut size: usize) -> usize {
     // round up new_end so that the next frame header is aligned
     const FRAME_HEADER_ALIGN: usize = align_of::<AtomicI32>();
     if !size.is_multiple_of(FRAME_HEADER_ALIGN) {
@@ -139,17 +139,17 @@ impl<M: AsRawSlice> ShmWriter<M> {
     }
 
     #[cfg(test)]
-    fn set_fail_on_claim(&mut self, fail_on_claim: bool) {
+    const fn set_fail_on_claim(&mut self, fail_on_claim: bool) {
         self.fail_on_claim = fail_on_claim;
     }
 
     /// Claim a frame of size `frame_size`.
     ///
     /// Returns `None` if there is no sufficient remaining space (or simulated crash in tests)
-    /// frame_size must be non-zero because frame header being 0 would be ambiguous.
+    /// `frame_size` must be non-zero because frame header being 0 would be ambiguous.
     pub fn claim_frame(&self, frame_size: NonZeroUsize) -> Option<FrameMut<'_>> {
         let shm_slice: *mut [u8] = self.mem.as_raw_slice();
-        let shm_ptr = shm_slice as *mut u8;
+        let shm_ptr = shm_slice.cast::<u8>();
         let shm_len = self.mem.as_raw_slice().len();
 
         let frame_size = frame_size.get();
@@ -162,6 +162,9 @@ impl<M: AsRawSlice> ShmWriter<M> {
         };
 
         // Get the atomic value of the end position (first 8 bytes of shared memory)
+        // SAFETY: `shm_ptr` points to the start of the shared memory region, which is properly
+        // aligned to `usize` (verified by `assert_alignment` in `new`), and the allocation is
+        // large enough to contain at least a `usize` header.
         let atomic_header = unsafe { AtomicUsize::from_ptr(shm_ptr.cast()) };
 
         let frame_with_header_size = size_of::<i32>() + frame_size;
@@ -192,10 +195,14 @@ impl<M: AsRawSlice> ShmWriter<M> {
 
         // Successfully claimed the space, now write the data
 
+        // SAFETY: The atomic fetch_update above guaranteed that `size_of::<usize>() + current_end`
+        // is within the shared memory bounds, so this pointer arithmetic stays within the allocation.
         let frame_start = unsafe {
             shm_ptr.add(/* shm header */ size_of::<usize>() + current_end)
         };
 
+        // SAFETY: `frame_start` is properly aligned to `i32` (ensured by `roundup_to_align_frame_header`)
+        // and points within the shared memory allocation (bounds checked by the atomic fetch_update).
         let frame_header = unsafe { AtomicI32::from_ptr(frame_start.cast()) };
 
         // Mark as partially written with positive size
@@ -206,9 +213,14 @@ impl<M: AsRawSlice> ShmWriter<M> {
         // Prevents compiler from re-ordering memory operations. Ensure the size is visible before writing the data
         fence(Ordering::Release);
 
+        // SAFETY: `frame_start` is within bounds and adding `size_of::<i32>()` skips the frame
+        // header to reach the content area, which is still within the claimed space.
         let frame_content_ptr = unsafe { frame_start.add(size_of::<i32>()) }; // skip the frame header
         Some(FrameMut {
             header: frame_header,
+            // SAFETY: `frame_content_ptr` is valid for `frame_size` bytes (guaranteed by the
+            // atomic space claim), properly aligned for `u8`, and no other writer will access
+            // this region because each writer atomically claims a unique range.
             content: unsafe { std::slice::from_raw_parts_mut(frame_content_ptr, frame_size) },
         })
     }
@@ -257,7 +269,7 @@ impl<M: AsRef<[u8]>> ShmReader<M> {
     /// The content of `mem` should be created by `ShmWriter`.
     /// Failing to do so may result in panics (mostly out-of-bounds), but won't trigger undefined behavior.
     ///
-    /// The ShmReader must be created after all writing to the shared memory is done and visible to the calling thread.
+    /// The `ShmReader` must be created after all writing to the shared memory is done and visible to the calling thread.
     /// This is guaranteed by `M: AsRef<[u8]>`, which means the memory region is immutable during the lifetime of `ShmReader`,
     /// so no need to mark `ShmReader::new` as unsafe, but care must be taken to create a safe `M` from the shared memory.
     pub fn new(mem: M) -> Self {
@@ -285,14 +297,12 @@ impl<M: AsRef<[u8]>> ShmReader<M> {
                     0 => {
                         // frame was claimed but never written (crashed process)
                         // Keep reading until we find a non-zero header
-                        continue;
                     }
                     1.. => {
                         // Partially written frame - skip it and continue
                         let size = usize::try_from(frame_header).unwrap();
                         remaining_content =
                             &remaining_content[roundup_to_align_frame_header(size)..];
-                        continue;
                     }
                     ..0 => {
                         // Fully written frame (negative size indicates completion)
@@ -339,10 +349,15 @@ mod tests {
         mem: Arc<Vec<usize>>,
         /// The actual requested byte length.
         ///
-        /// over-allocation might happen to ensure alignment of `usize`, so mem.len() might be inaccurate.
+        /// over-allocation might happen to ensure alignment of `usize`, so `mem.len()` might be inaccurate.
         len: usize,
     }
+    // SAFETY: `MockedShm` uses `Arc<Vec<usize>>` for its backing memory, which is safe to send
+    // across threads. The raw pointer access through `AsRawSlice` is synchronized by `ShmWriter`'s
+    // atomic operations.
     unsafe impl Send for MockedShm {}
+    // SAFETY: Concurrent access to the shared memory is synchronized by `ShmWriter`'s atomic
+    // operations. The `Arc` wrapper ensures the allocation remains valid.
     unsafe impl Sync for MockedShm {}
     impl MockedShm {
         fn alloc(len: usize) -> Self {
@@ -356,6 +371,9 @@ mod tests {
     }
     impl AsRef<[u8]> for MockedShm {
         fn as_ref(&self) -> &[u8] {
+            // SAFETY: `Vec::as_ptr` returns a valid pointer to the vec's buffer. The vec is
+            // allocated with enough `usize` elements to cover `self.len` bytes, and the pointer
+            // is valid for reads of `self.len` bytes. The `Arc` ensures the allocation is alive.
             unsafe { std::slice::from_raw_parts(Vec::as_ptr(&self.mem).cast(), self.len) }
         }
     }
@@ -368,6 +386,7 @@ mod tests {
 
     #[test]
     fn single_thread_basic() {
+        // SAFETY: `MockedShm::alloc` provides a valid, properly-sized, zero-initialized allocation.
         let writer = unsafe { ShmWriter::new(MockedShm::alloc(1024)) };
         assert!(writer.try_write_frame(b"hello"));
         assert!(writer.try_write_frame(b"world"));
@@ -383,6 +402,7 @@ mod tests {
     }
     #[test]
     fn single_thread_empty() {
+        // SAFETY: `MockedShm::alloc` provides a valid, properly-sized, zero-initialized allocation.
         let writer = unsafe { ShmWriter::new(MockedShm::alloc(1024)) };
         assert!(writer.try_write_frame(b"hello"));
         assert!(!writer.try_write_frame(b""));
@@ -397,6 +417,7 @@ mod tests {
 
     #[test]
     fn single_thread_crash_after_claim() {
+        // SAFETY: `MockedShm::alloc` provides a valid, properly-sized, zero-initialized allocation.
         let mut writer = unsafe { ShmWriter::new(MockedShm::alloc(1024)) };
         assert!(writer.try_write_frame(b"foo"));
 
@@ -416,6 +437,7 @@ mod tests {
 
     #[test]
     fn single_thread_crash_partial_write() {
+        // SAFETY: `MockedShm::alloc` provides a valid, properly-sized, zero-initialized allocation.
         let writer = unsafe { ShmWriter::new(MockedShm::alloc(1024)) };
         assert!(writer.try_write_frame(b"foo"));
 
@@ -440,6 +462,7 @@ mod tests {
         // that the reader doesn't stop at the first invalid frame but keeps processing
         // through multiple crash scenarios to find valid frames beyond them.
 
+        // SAFETY: `MockedShm::alloc` provides a valid, properly-sized, zero-initialized allocation.
         let mut writer = unsafe { ShmWriter::new(MockedShm::alloc(1024)) };
 
         assert!(writer.try_write_frame(b"foo"));
@@ -468,6 +491,7 @@ mod tests {
 
     #[test]
     fn single_thread_two_crashes_partial_write_and_after_claim() {
+        // SAFETY: `MockedShm::alloc` provides a valid, properly-sized, zero-initialized allocation.
         let mut writer = unsafe { ShmWriter::new(MockedShm::alloc(1024)) };
         // This test verifies the same loop continuation behavior but with crashes
         // in reverse order. This ensures the loop correctly handles different
@@ -503,6 +527,9 @@ mod tests {
         thread::scope(|s| {
             for _ in 0..4 {
                 s.spawn(|| {
+                    // SAFETY: `MockedShm::alloc` provides a valid, properly-sized, zero-initialized
+                    // allocation. The clone shares the same backing memory, which is safe because
+                    // `ShmWriter` uses atomic operations for concurrent access.
                     let writer = unsafe { ShmWriter::new(shm.clone()) };
                     for _ in 0..10 {
                         assert!(writer.try_write_frame(b"hello"));
@@ -524,6 +551,7 @@ mod tests {
 
     #[test]
     fn concurrent_exceeded_size() {
+        // SAFETY: `MockedShm::alloc` provides a valid, properly-sized, zero-initialized allocation.
         let writer = unsafe { ShmWriter::new(MockedShm::alloc(1024)) };
         thread::scope(|s| {
             for _ in 0..4 {
@@ -550,6 +578,7 @@ mod tests {
     fn test_integer_overflow_space_calculation() {
         // Test case for potential integer overflow in space calculation
 
+        // SAFETY: `MockedShm::alloc` provides a valid, properly-sized, zero-initialized allocation.
         let writer = unsafe { ShmWriter::new(MockedShm::alloc(1024)) };
 
         // Try to trigger integer overflow by using maximum values
@@ -572,6 +601,7 @@ mod tests {
         // Test for race condition in space calculation where multiple threads
         // might calculate overlapping space requirements
 
+        // SAFETY: `MockedShm::alloc` provides a valid, properly-sized, zero-initialized allocation.
         let writer = unsafe { ShmWriter::new(MockedShm::alloc(200)) };
 
         // Very small buffer
@@ -605,6 +635,8 @@ mod tests {
             fn as_raw_slice(&self) -> *mut [u8] {
                 let raw_slice = self.0.as_raw_slice();
                 slice_from_raw_parts_mut(
+                    // SAFETY: Adding 1 byte to create a deliberately misaligned pointer for testing.
+                    // The original allocation is large enough that adding 1 byte stays within bounds.
                     unsafe { raw_slice.cast::<u8>().add(1) },
                     raw_slice.len() - 1,
                 )
@@ -624,6 +656,8 @@ mod tests {
 
         // This should panic due to alignment assertion
         let result = std::panic::catch_unwind(|| {
+            // SAFETY: Intentionally passing a misaligned pointer to test that the alignment
+            // assertion in `ShmWriter::new` correctly panics. This is expected to panic.
             unsafe { ShmWriter::new(misaligned_shm) };
         });
 
@@ -651,9 +685,12 @@ mod tests {
             let child_index = args.next().expect("child name").into_string().unwrap();
 
             let shm = ShmemConf::new().os_id(shm_name).open().unwrap();
+            // SAFETY: `shm` is a freshly opened shared memory region with a valid pointer and size.
+            // Concurrent write access is safe because `ShmWriter` uses atomic operations.
             let writer = unsafe { ShmWriter::new(shm) };
             for i in 0..FRAME_COUNT_EACH_CHILD {
-                assert!(writer.try_write_frame(format!("{child_index} {i}").as_bytes()));
+                let frame_data = format!("{child_index} {i}");
+                assert!(writer.try_write_frame(frame_data.as_bytes()));
             }
             std::process::exit(0);
         }
@@ -677,13 +714,16 @@ mod tests {
             assert!(status.success());
         }
 
+        // SAFETY: All child processes have exited (waited above), so no concurrent writers exist.
+        // The shared memory is valid and fully written.
         let shm = unsafe { shm.as_slice() };
         let reader = ShmReader::new(shm);
         let frames = reader.iter_frames().map(BStr::new).collect::<HashSet<&BStr>>();
         assert_eq!(frames.len(), CHILD_COUNT * FRAME_COUNT_EACH_CHILD);
         for child_index in 0..CHILD_COUNT {
             for i in 0..FRAME_COUNT_EACH_CHILD {
-                assert!(frames.contains(&BStr::new(format!("{child_index} {i}").as_bytes())));
+                let frame_data = format!("{child_index} {i}");
+                assert!(frames.contains(&BStr::new(frame_data.as_bytes())));
             }
         }
     }

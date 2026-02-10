@@ -132,7 +132,7 @@ impl PackageGraphBuilder {
         self.id_and_deps_by_path.insert(package_path.clone(), (id, deps));
 
         // Also maintain name to path mapping for dependency resolution
-        match self.name_to_path.entry(package_name.clone()) {
+        match self.name_to_path.entry(package_name) {
             Entry::Vacant(entry) => {
                 entry.insert(SmallVec1::new(package_path));
             }
@@ -174,6 +174,7 @@ impl PackageGraphBuilder {
 /// newtype of `DefaultIx` for indices in package graphs
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PackageIx(DefaultIx);
+// SAFETY: PackageIx is a newtype over DefaultIx which already implements IndexType correctly
 unsafe impl petgraph::graph::IndexType for PackageIx {
     fn new(x: usize) -> Self {
         Self(DefaultIx::new(x))
@@ -192,6 +193,9 @@ pub type PackageNodeIndex = NodeIndex<PackageIx>;
 pub type PackageEdgeIndex = EdgeIndex<DefaultIx>;
 
 /// Discover the workspace from cwd and load the package graph.
+///
+/// # Errors
+/// Returns an error if the workspace cannot be found or the package graph cannot be loaded.
 pub fn discover_package_graph(
     cwd: impl AsRef<AbsolutePath>,
 ) -> Result<DiGraph<PackageInfo, DependencyType, PackageIx>, Error> {
@@ -200,6 +204,12 @@ pub fn discover_package_graph(
 }
 
 /// Load the package graph from a discovered workspace.
+///
+/// # Errors
+/// Returns an error if workspace files cannot be read/parsed, or if packages are outside the workspace root.
+///
+/// # Panics
+/// Panics if a `package.json` path has no parent directory (should not happen for valid paths).
 pub fn load_package_graph(
     workspace_root: &WorkspaceRoot,
 ) -> Result<DiGraph<PackageInfo, DependencyType, PackageIx>, Error> {
@@ -285,9 +295,10 @@ pub fn load_package_graph(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, fs};
+    use std::fs;
 
     use petgraph::visit::EdgeRef;
+    use rustc_hash::FxHashSet;
     use tempfile::TempDir;
 
     use super::*;
@@ -824,9 +835,9 @@ mod tests {
         assert_eq!(graph.node_count(), 4);
 
         // Verify packages were found
-        let mut packages_found = HashSet::<String>::new();
+        let mut packages_found = FxHashSet::<Str>::default();
         for node in graph.node_weights() {
-            packages_found.insert(node.package_json.name.to_string());
+            packages_found.insert(node.package_json.name.clone());
         }
         assert!(packages_found.contains("npm-monorepo"));
         assert!(packages_found.contains("@myorg/shared"));
@@ -918,9 +929,9 @@ mod tests {
         assert_eq!(graph.node_count(), 4);
 
         // Verify all packages were found
-        let mut packages_found = HashSet::<String>::new();
+        let mut packages_found = FxHashSet::<Str>::default();
         for node in graph.node_weights() {
-            packages_found.insert(node.package_json.name.to_string());
+            packages_found.insert(node.package_json.name.clone());
         }
         assert!(packages_found.contains("yarn-monorepo"));
         assert!(packages_found.contains("core"));
@@ -1005,9 +1016,9 @@ mod tests {
         let graph = discover_package_graph(temp_dir_path).unwrap();
 
         // Check which packages were included
-        let mut packages_found = HashSet::<String>::new();
+        let mut packages_found = FxHashSet::<Str>::default();
         for node in graph.node_weights() {
-            packages_found.insert(node.package_json.name.to_string());
+            packages_found.insert(node.package_json.name.clone());
         }
 
         assert!(packages_found.contains("npm-workspace-exclusions"), "Root should be included");

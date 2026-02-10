@@ -5,11 +5,7 @@ mod package_graph;
 pub mod query;
 mod specifier;
 
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    convert::Infallible,
-    sync::Arc,
-};
+use std::{convert::Infallible, sync::Arc};
 
 use config::{ResolvedTaskConfig, UserRunConfig};
 use package_graph::IndexedPackageGraph;
@@ -17,9 +13,9 @@ use petgraph::{
     graph::{DefaultIx, DiGraph, EdgeIndex, IndexType, NodeIndex},
     visit::{Control, DfsEvent, depth_first_search},
 };
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use serde::Serialize;
 pub use specifier::TaskSpecifier;
-use vec1::smallvec_v1::SmallVec1;
 use vite_path::AbsolutePath;
 use vite_str::Str;
 use vite_workspace::{PackageNodeIndex, WorkspaceRoot};
@@ -44,11 +40,13 @@ pub struct TaskDependencyType(TaskDependencyTypeInner);
 // It hides `TaskDependencyTypeInner` and only expose `is_explicit`/`is_topological`
 // to avoid incorrectly matching only Explicit variant to check if it's explicit.
 impl TaskDependencyType {
-    pub fn is_explicit(self) -> bool {
+    #[must_use]
+    pub const fn is_explicit(self) -> bool {
         matches!(self.0, TaskDependencyTypeInner::Explicit | TaskDependencyTypeInner::Both)
     }
 
-    pub fn is_topological(self) -> bool {
+    #[must_use]
+    pub const fn is_topological(self) -> bool {
         matches!(self.0, TaskDependencyTypeInner::Topological | TaskDependencyTypeInner::Both)
     }
 }
@@ -81,6 +79,7 @@ pub struct TaskNode {
 impl vite_graph_ser::GetKey for TaskNode {
     type Key<'a> = (&'a AbsolutePath, &'a str);
 
+    #[expect(clippy::disallowed_types, reason = "trait requires String as error type")]
     fn key(&self) -> Result<Self::Key<'_>, String> {
         Ok((&self.task_display.package_path, &self.task_display.task_name))
     }
@@ -150,6 +149,7 @@ pub enum SpecifierLookupError<PackageUnknownError = Infallible> {
 /// newtype of `DefaultIx` for indices in task graphs
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct TaskIx(DefaultIx);
+// SAFETY: TaskIx is a newtype over DefaultIx which already implements IndexType correctly
 unsafe impl IndexType for TaskIx {
     fn new(x: usize) -> Self {
         Self(DefaultIx::new(x))
@@ -167,7 +167,7 @@ unsafe impl IndexType for TaskIx {
 pub type TaskNodeIndex = NodeIndex<TaskIx>;
 pub type TaskEdgeIndex = EdgeIndex<TaskIx>;
 
-/// Full task graph of a workspace, with necessary HashMaps for quick task lookup
+/// Full task graph of a workspace, with necessary hash maps for quick task lookup
 ///
 /// It's immutable after created. The task nodes contain resolved task configurations and their dependencies.
 /// External factors (e.g. additional args from cli, current working directory, environmental variables) are not stored here.
@@ -176,18 +176,32 @@ pub struct IndexedTaskGraph {
     task_graph: DiGraph<TaskNode, TaskDependencyType, TaskIx>,
 
     /// Preserve the package graph for two purposes:
-    /// - `self.task_graph` refers packages via PackageNodeIndex. To display package names and paths, we need to lookup them in package_graph.
+    /// - `self.task_graph` refers packages via `PackageNodeIndex`. To display package names and paths, we need to lookup them in `package_graph`.
     /// - To find nearest topological tasks when the starting package itself doesn't contain the task with the given name.
     indexed_package_graph: IndexedPackageGraph,
 
     /// task indices by task id for quick lookup
-    node_indices_by_task_id: HashMap<TaskId, TaskNodeIndex>,
+    node_indices_by_task_id: FxHashMap<TaskId, TaskNodeIndex>,
 }
 
 pub type TaskGraph = DiGraph<TaskNode, TaskDependencyType, TaskIx>;
 
 impl IndexedTaskGraph {
     /// Load the task graph from a discovered workspace using the provided config loader.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TaskGraphLoadError`] if the package graph fails to load, a config file
+    /// cannot be read, a task config cannot be resolved, a dependency specifier is invalid,
+    /// or `cacheScripts` is set in a non-root package.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "graph loading is inherently sequential and multi-step"
+    )]
+    #[expect(
+        clippy::future_not_send,
+        reason = "UserConfigLoader uses async_trait(?Send) so the future is intentionally not Send"
+    )]
     pub async fn load(
         workspace_root: &WorkspaceRoot,
         config_loader: &dyn loader::UserConfigLoader,
@@ -200,8 +214,8 @@ impl IndexedTaskGraph {
         let mut task_ids_with_dependency_specifiers: Vec<(TaskId, Option<Arc<[Str]>>)> = Vec::new();
 
         // index tasks by ids
-        let mut node_indices_by_task_id: HashMap<TaskId, TaskNodeIndex> =
-            HashMap::with_capacity(task_graph.node_count());
+        let mut node_indices_by_task_id: FxHashMap<TaskId, TaskNodeIndex> =
+            FxHashMap::with_capacity_and_hasher(task_graph.node_count(), FxBuildHasher);
 
         // First pass: load all configs, extract cacheScripts from root, validate
         let mut cache_scripts = false; // Default: disabled
@@ -240,7 +254,7 @@ impl IndexedTaskGraph {
             let package = &package_graph[package_index];
 
             // Collect package.json scripts into a mutable map for draining lookup.
-            let mut package_json_scripts: HashMap<&str, &str> = package
+            let mut package_json_scripts: FxHashMap<&str, &str> = package
                 .package_json
                 .scripts
                 .iter()
@@ -285,7 +299,7 @@ impl IndexedTaskGraph {
             }
 
             // For remaining package.json scripts not defined in vite.config.*, create tasks with default config
-            for (script_name, package_json_script) in package_json_scripts.drain() {
+            for (script_name, package_json_script) in package_json_scripts {
                 let task_id = TaskId { task_name: Str::from(script_name), package_index };
                 let resolved_config = ResolvedTaskConfig::resolve_package_json_script(
                     &package_dir,
@@ -301,21 +315,6 @@ impl IndexedTaskGraph {
                     resolved_config,
                 });
                 node_indices_by_task_id.insert(task_id, node_index);
-            }
-        }
-
-        // Grouping package indices by their package names.
-        let mut package_indices_by_name: HashMap<Str, SmallVec1<[PackageNodeIndex; 1]>> =
-            HashMap::new();
-        for package_index in package_graph.node_indices() {
-            let package = &package_graph[package_index];
-            match package_indices_by_name.entry(package.package_json.name.clone()) {
-                Entry::Vacant(vacant) => {
-                    vacant.insert(SmallVec1::new(package_index));
-                }
-                Entry::Occupied(occupied) => {
-                    occupied.into_mut().push(package_index);
-                }
             }
         }
 
@@ -349,19 +348,19 @@ impl IndexedTaskGraph {
         }
 
         // Add topological dependencies based on package dependencies
-        let mut nearest_topological_tasks = Vec::<TaskNodeIndex>::new();
         for (task_id, task_index) in &me.node_indices_by_task_id {
             let task_name = task_id.task_name.as_str();
             let package_index = task_id.package_index;
 
             // For every task, find nearest tasks with the same name.
             // If there is a task with the same name in a deeper dependency, it will be connected via that nearer dependency's task.
+            let mut nearest_topological_tasks = Vec::<TaskNodeIndex>::new();
             me.find_nearest_topological_tasks(
                 task_name,
                 package_index,
                 &mut nearest_topological_tasks,
             );
-            for nearest_task_index in nearest_topological_tasks.drain(..) {
+            for nearest_task_index in nearest_topological_tasks {
                 if let Some(existing_edge_index) =
                     me.task_graph.find_edge(*task_index, nearest_task_index)
                 {
@@ -420,19 +419,19 @@ impl IndexedTaskGraph {
                     return Control::<()>::Continue;
                 };
 
-                if let Some(dependency_task_index) = self.node_indices_by_task_id.get(&TaskId {
-                    package_index: dependency_package_index,
-                    task_name: task_name.into(),
-                }) {
-                    // Encountered a package containing the task with the same name
-                    // collect the task index
-                    out.push(*dependency_task_index);
+                self.node_indices_by_task_id
+                    .get(&TaskId {
+                        package_index: dependency_package_index,
+                        task_name: task_name.into(),
+                    })
+                    .map_or(Control::Continue, |dependency_task_index| {
+                        // Encountered a package containing the task with the same name
+                        // collect the task index
+                        out.push(*dependency_task_index);
 
-                    // And stop searching further down this branch
-                    Control::Prune
-                } else {
-                    Control::Continue
-                }
+                        // And stop searching further down this branch
+                        Control::Prune
+                    })
             },
         );
     }
@@ -450,13 +449,11 @@ impl IndexedTaskGraph {
             let Some(package_indices) =
                 self.indexed_package_graph.get_package_indices_by_name(&package_name)
             else {
-                return Err(SpecifierLookupError::PackageNameNotFound {
-                    package_name: package_name.into(),
-                });
+                return Err(SpecifierLookupError::PackageNameNotFound { package_name });
             };
             if package_indices.len() > 1 {
                 return Err(SpecifierLookupError::AmbiguousPackageName {
-                    package_name: package_name.into(),
+                    package_name,
                     package_paths: package_indices
                         .iter()
                         .map(|package_index| {
@@ -467,7 +464,7 @@ impl IndexedTaskGraph {
                         })
                         .collect(),
                 });
-            };
+            }
             *package_indices.first()
         } else {
             // No '#', so the specifier only contains task name, look up in the origin path package
@@ -483,25 +480,29 @@ impl IndexedTaskGraph {
                     .package_json
                     .name
                     .clone(),
-                task_name: task_id_to_lookup.task_name.clone(),
+                task_name: task_id_to_lookup.task_name,
                 package_index,
             });
         };
         Ok(*node_index)
     }
 
-    pub fn task_graph(&self) -> &TaskGraph {
+    #[must_use]
+    pub const fn task_graph(&self) -> &TaskGraph {
         &self.task_graph
     }
 
+    #[must_use]
     pub fn get_package_name(&self, package_index: PackageNodeIndex) -> &str {
         self.indexed_package_graph.package_graph()[package_index].package_json.name.as_str()
     }
 
+    #[must_use]
     pub fn get_package_path(&self, package_index: PackageNodeIndex) -> &Arc<AbsolutePath> {
         &self.indexed_package_graph.package_graph()[package_index].absolute_path
     }
 
+    #[must_use]
     pub fn get_package_path_for_task(&self, task_index: TaskNodeIndex) -> &Arc<AbsolutePath> {
         &self.task_graph[task_index].task_display.package_path
     }

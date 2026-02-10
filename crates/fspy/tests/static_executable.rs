@@ -1,4 +1,10 @@
 #![cfg(target_os = "linux")]
+#![allow(
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "non-vite crate"
+)]
 
 use std::{
     fs::{self, Permissions},
@@ -20,7 +26,7 @@ const TEST_BIN_CONTENT: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_FSPY_TEST_BI
 fn test_bin_path() -> &'static Path {
     static TEST_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
         assert_eq!(
-            is_dynamically_linked_to_libc(&TEST_BIN_CONTENT),
+            is_dynamically_linked_to_libc(TEST_BIN_CONTENT),
             Ok(false),
             "Test binary is not a static executable"
         );
@@ -40,7 +46,7 @@ async fn track_test_bin(args: &[&str], cwd: Option<&str>) -> PathAccessIterable 
     let mut cmd = fspy::Command::new(test_bin_path());
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
-    };
+    }
     cmd.args(args);
     let tracked_child = cmd.spawn().await.unwrap();
 

@@ -1,5 +1,6 @@
 mod error;
 
+#[expect(clippy::disallowed_types, reason = "wax::Glob::is_match requires std::path::Path")]
 use std::path::Path;
 
 pub use error::Error;
@@ -15,6 +16,8 @@ pub struct GlobPatternSet<'a> {
 }
 
 impl<'a> GlobPatternSet<'a> {
+    /// # Errors
+    /// Returns an error if any glob pattern is invalid.
     pub fn new<I, S>(match_patterns: I) -> Result<Self, Error>
     where
         I: IntoIterator<Item = &'a S>,
@@ -37,6 +40,7 @@ impl<'a> GlobPatternSet<'a> {
         Ok(Self { patterns, has_negated })
     }
 
+    #[expect(clippy::disallowed_types, reason = "wax::Glob::is_match requires std::path::Path")]
     pub fn is_match(&self, path: impl AsRef<Path>) -> bool {
         let mut should_match = false; // Default: don't match
         for (glob, match_or_not) in &self.patterns {
@@ -107,8 +111,11 @@ mod tests {
         assert!(ignores.is_match("error.log"));
         assert!(ignores.is_match("temp/file.tmp"));
         assert!(ignores.is_match("deep/nested/path/cache.tmp"));
-        assert!(ignores.is_match(String::from("deep/nested/path/cache.tmp")));
-        assert!(ignores.is_match(Path::new("deep/nested/path/cache.tmp")));
+        #[expect(clippy::disallowed_types, reason = "wax::Glob::is_match requires std::path::Path")]
+        {
+            assert!(ignores.is_match(String::from("deep/nested/path/cache.tmp")));
+            assert!(ignores.is_match(Path::new("deep/nested/path/cache.tmp")));
+        }
 
         // Should NOT ignore negated patterns
         assert!(!ignores.is_match("important.log"));
@@ -297,6 +304,10 @@ mod tests {
         Ok(())
     }
 
+    #[expect(
+        clippy::disallowed_types,
+        reason = "tests that is_match accepts various argument types"
+    )]
     #[test]
     fn test_generic_api_with_different_types() -> Result<(), Error> {
         use vite_str::Str;

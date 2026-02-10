@@ -71,6 +71,8 @@ impl RelativePath {
     /// Panics if the stripped path contains non-UTF-8 characters, which should not happen for valid `RelativePath` instances.
     pub fn strip_prefix<P: AsRef<Self>>(&self, base: P) -> Option<&Self> {
         let stripped_path = Path::new(self.as_str()).strip_prefix(base.as_ref().as_path()).ok()?;
+        // SAFETY: The stripped result of a portable RelativePath is still portable:
+        // it remains valid UTF-8 and contains no backslash separators.
         Some(unsafe { Self::assume_portable(stripped_path.to_str().unwrap()) })
     }
 }
@@ -79,7 +81,10 @@ impl RelativePath {
 #[derive(
     Debug, Encode, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Serialize, Deserialize, Default,
 )]
-#[expect(clippy::unsafe_derive_deserialize)]
+#[expect(
+    clippy::unsafe_derive_deserialize,
+    reason = "unsafe in Decode impl validates portability invariants"
+)]
 pub struct RelativePathBuf(Str);
 
 impl AsRef<Path> for RelativePathBuf {
@@ -183,15 +188,23 @@ impl RelativePathBuf {
 
     #[must_use]
     pub fn as_relative_path(&self) -> &RelativePath {
+        // SAFETY: RelativePathBuf's constructors (new, Decode) validate portability
+        // invariants, so the inner string is guaranteed to be a valid portable path.
         unsafe { RelativePath::assume_portable(&self.0) }
     }
 }
 
-impl<'a, Context> Decode<Context> for RelativePathBuf {
+impl<Context> Decode<Context> for RelativePathBuf {
     fn decode<D: Decoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
         let path_str = Str::decode(decoder)?;
-        Self::new(path_str.as_str())
-            .map_err(|err| DecodeError::OtherString(format!("{err}: {path_str}")))
+        Self::new(path_str.as_str()).map_err(|err| {
+            #[expect(
+                clippy::disallowed_macros,
+                reason = "bincode::error::DecodeError requires std format!"
+            )]
+            let msg = format!("{err}: {path_str}");
+            DecodeError::OtherString(msg)
+        })
     }
 }
 
@@ -269,6 +282,7 @@ mod ts_impl {
 
     use super::RelativePathBuf;
 
+    #[expect(clippy::disallowed_types, reason = "ts_rs::TS trait requires returning std String")]
     impl TS for RelativePathBuf {
         type OptionInnerType = Self;
         type WithoutGenerics = Self;
@@ -318,10 +332,10 @@ mod tests {
     fn non_utf8() {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt as _};
 
-        let non_utf8_path = Path::new(OsStr::from_bytes(&[0xC0]));
+        let non_utf8_os_str = OsStr::from_bytes(&[0xC0]);
         let_assert!(
             Err(FromPathError::InvalidPathData(InvalidPathDataError::NonUtf8)) =
-                RelativePathBuf::new(non_utf8_path),
+                RelativePathBuf::new(non_utf8_os_str),
         );
     }
 
@@ -380,7 +394,7 @@ mod tests {
     #[test]
     fn push() {
         let mut rel_path = RelativePathBuf::new("foo/bar").unwrap();
-        rel_path.push(RelativePathBuf::new(Path::new("baz")).unwrap());
+        rel_path.push(RelativePathBuf::new("baz").unwrap());
         assert_eq!(rel_path.as_str(), "foo/bar/baz");
     }
 

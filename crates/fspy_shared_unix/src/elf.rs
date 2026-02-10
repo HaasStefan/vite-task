@@ -7,6 +7,11 @@ use std::{
 use bstr::BStr;
 use elf::{ElfBytes, abi::PT_INTERP, endian::AnyEndian};
 
+/// Checks whether the given ELF executable is dynamically linked to libc.
+///
+/// # Errors
+///
+/// Returns `ENOEXEC` if the binary cannot be parsed as a valid ELF file.
 pub fn is_dynamically_linked_to_libc(executable: impl AsRef<[u8]>) -> nix::Result<bool> {
     let executable = executable.as_ref();
     let Some(interp) = get_interp(executable)? else {
@@ -20,8 +25,8 @@ pub fn is_dynamically_linked_to_libc(executable: impl AsRef<[u8]>) -> nix::Resul
 }
 
 fn get_interp(executable: &[u8]) -> nix::Result<Option<&BStr>> {
-    let elf = ElfBytes::<'_, AnyEndian>::minimal_parse(executable.as_ref())
-        .map_err(|_| nix::Error::ENOEXEC)?;
+    let elf =
+        ElfBytes::<'_, AnyEndian>::minimal_parse(executable).map_err(|_| nix::Error::ENOEXEC)?;
     let Some(headers) = elf.segments() else {
         return Ok(None);
     };
@@ -44,16 +49,15 @@ mod tests {
     use super::*;
     #[test]
     fn dynamic_executable() {
-        assert_eq!(is_dynamically_linked_to_libc(read("/bin/sh").unwrap()).unwrap(), true);
+        assert!(is_dynamically_linked_to_libc(read("/bin/sh").unwrap()).unwrap());
     }
     #[test]
     fn static_executable() {
         let cat = read("/bin/cat").unwrap();
         let ld_so_path = get_interp(&cat).unwrap().unwrap();
 
-        assert_eq!(
-            is_dynamically_linked_to_libc(read(OsStr::from_bytes(ld_so_path)).unwrap()).unwrap(),
-            false
+        assert!(
+            !is_dynamically_linked_to_libc(read(OsStr::from_bytes(ld_so_path)).unwrap()).unwrap()
         );
     }
 }

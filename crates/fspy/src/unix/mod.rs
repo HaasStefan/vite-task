@@ -69,10 +69,10 @@ impl SpyImpl {
 
     pub(crate) async fn spawn(&self, mut command: Command) -> Result<TrackedChild, SpawnError> {
         #[cfg(target_os = "linux")]
-        let supervisor = supervise::<SyscallHandler>().map_err(SpawnError::SupervisorError)?;
+        let supervisor = supervise::<SyscallHandler>().map_err(SpawnError::Supervisor)?;
 
         let (ipc_channel_conf, ipc_receiver) =
-            channel(SHM_CAPACITY).map_err(SpawnError::ChannelCreationError)?;
+            channel(SHM_CAPACITY).map_err(SpawnError::ChannelCreation)?;
 
         let payload = Payload {
             ipc_channel_conf,
@@ -98,11 +98,12 @@ impl SpyImpl {
                 exec_resolve_accesses.add(path_access);
             },
         )
-        .map_err(|err| SpawnError::InjectionError(err.into()))?;
+        .map_err(|err| SpawnError::Injection(err.into()))?;
         command.set_exec(exec);
 
         let mut tokio_command = command.into_tokio_command();
 
+        // SAFETY: the pre_exec closure only calls pre_exec.run() which is safe to call in a fork context
         unsafe {
             tokio_command.pre_exec(move || {
                 if let Some(pre_exec) = pre_exec.as_ref() {
@@ -117,8 +118,8 @@ impl SpyImpl {
         // which needs to accept incoming connections while `pre_exec` is connecting to it.
         let mut child = spawn_blocking(move || tokio_command.spawn())
             .await
-            .map_err(|err| SpawnError::OsSpawnError(err.into()))?
-            .map_err(SpawnError::OsSpawnError)?;
+            .map_err(|err| SpawnError::OsSpawn(err.into()))?
+            .map_err(SpawnError::OsSpawn)?;
 
         Ok(TrackedChild {
             stdin: child.stdin.take(),
@@ -133,7 +134,11 @@ impl SpyImpl {
                 // Stop the supervisor and collect path accesses from it.
                 #[cfg(target_os = "linux")]
                 let arenas = arenas.chain(
-                    supervisor.stop().await?.into_iter().map(|handler| handler.into_arena()),
+                    supervisor
+                        .stop()
+                        .await?
+                        .into_iter()
+                        .map(syscall_handler::SyscallHandler::into_arena),
                 );
                 let arenas = arenas.collect::<Vec<_>>();
 
@@ -145,7 +150,7 @@ impl SpyImpl {
 
                 io::Result::Ok(ChildTermination { status, path_accesses })
             })
-            .map(|f| io::Result::Ok(f??)) // flatten JoinError and io::Result
+            .map(|f| f?) // flatten JoinError and io::Result
             .boxed(),
         })
     }

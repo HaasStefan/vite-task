@@ -14,6 +14,7 @@ use crate::{
 
 #[cfg(target_os = "macos")]
 pub unsafe fn environ() -> *const *const c_char {
+    // SAFETY: _NSGetEnviron() always returns a valid pointer to the process's environ on macOS
     unsafe { *(libc::_NSGetEnviron().cast()) }
 }
 
@@ -22,6 +23,7 @@ pub unsafe fn environ() -> *const *const c_char {
     unsafe extern "C" {
         static environ: *const *const c_char;
     }
+    // SAFETY: environ is a valid global pointer to the process environment, as defined by POSIX
     unsafe { environ }
 }
 
@@ -33,6 +35,7 @@ fn handle_exec(
 ) -> libc::c_int {
     let client =
         global_client().expect("exec unexpectedly called before client initialized in ctor");
+    // SAFETY: prog, argv, and envp are valid pointers to C strings/arrays forwarded from the interposed exec function
     let result = unsafe {
         client.handle_exec(config, RawExec { prog, argv, envp }, |raw_command, pre_exec| {
             if let Some(pre_exec) = pre_exec {
@@ -65,7 +68,12 @@ unsafe extern "C" fn execve(
 
 intercept!(execl(64): unsafe extern "C" fn(path: *const c_char, arg0: *const c_char, ...) -> c_int);
 unsafe extern "C" fn execl(path: *const c_char, arg0: *const c_char, valist: ...) -> c_int {
+    #[expect(
+        clippy::no_effect_underscore_binding,
+        reason = "suppresses unused warning on *::original"
+    )]
     let _unused = execl::original;
+    // SAFETY: valist and arg0 are valid variadic arguments forwarded from the interposed execl function
     unsafe {
         with_argv(valist, arg0, |args, _remaining| {
             handle_exec(ExecResolveConfig::search_path_disabled(), path, args.as_ptr(), environ())
@@ -75,7 +83,12 @@ unsafe extern "C" fn execl(path: *const c_char, arg0: *const c_char, valist: ...
 
 intercept!(execlp(64): unsafe extern "C" fn(path: *const c_char, arg0: *const c_char, ...) -> c_int);
 unsafe extern "C" fn execlp(path: *const c_char, arg0: *const c_char, valist: ...) -> c_int {
+    #[expect(
+        clippy::no_effect_underscore_binding,
+        reason = "suppresses unused warning on *::original"
+    )]
     let _unused = execlp::original;
+    // SAFETY: valist and arg0 are valid variadic arguments forwarded from the interposed execlp function
     unsafe {
         with_argv(valist, arg0, |args, _remaining| {
             handle_exec(
@@ -90,7 +103,12 @@ unsafe extern "C" fn execlp(path: *const c_char, arg0: *const c_char, valist: ..
 
 intercept!(execle(64): unsafe extern "C" fn(path: *const c_char, arg0: *const c_char, ...) -> c_int);
 unsafe extern "C" fn execle(path: *const c_char, arg0: *const c_char, valist: ...) -> c_int {
+    #[expect(
+        clippy::no_effect_underscore_binding,
+        reason = "suppresses unused warning on *::original"
+    )]
     let _unused = execle::original;
+    // SAFETY: valist and arg0 are valid variadic arguments forwarded from the interposed execle function
     unsafe {
         with_argv(valist, arg0, |args, mut remaining| {
             let envp = remaining.arg::<*const *const c_char>();
@@ -101,7 +119,12 @@ unsafe extern "C" fn execle(path: *const c_char, arg0: *const c_char, valist: ..
 
 intercept!(execv(64): unsafe extern "C" fn(path: *const c_char, argv: *const *const c_char) -> c_int);
 unsafe extern "C" fn execv(path: *const c_char, argv: *const *const c_char) -> c_int {
+    #[expect(
+        clippy::no_effect_underscore_binding,
+        reason = "suppresses unused warning on *::original"
+    )]
     let _unused = execv::original;
+    // SAFETY: path, argv are valid pointers forwarded from the interposed function; environ() returns the process environment
     unsafe { handle_exec(ExecResolveConfig::search_path_disabled(), path, argv, environ()) }
 }
 
@@ -110,14 +133,29 @@ intercept!(execvp(64): unsafe extern "C" fn(
     argv: *const *const libc::c_char,
 ) -> c_int);
 unsafe extern "C" fn execvp(prog: *const c_char, argv: *const *const c_char) -> c_int {
+    #[expect(
+        clippy::no_effect_underscore_binding,
+        reason = "suppresses unused warning on *::original"
+    )]
     let _unused = execvp::original;
+    // SAFETY: environ() returns the valid process environment pointer
     handle_exec(ExecResolveConfig::search_path_enabled(None), prog, argv, unsafe { environ() })
 }
 
 #[cfg(target_os = "linux")]
 mod linux_only {
-    use std::ops::Deref;
-
+    #[expect(
+        clippy::useless_attribute,
+        reason = "allow_attributes on use items is flagged as useless but needed here"
+    )]
+    #[expect(
+        clippy::allow_attributes,
+        reason = "using allow because wildcard_imports may or may not fire depending on build target"
+    )]
+    #[allow(
+        clippy::wildcard_imports,
+        reason = "macro-generated code requires types from parent scope"
+    )]
     use super::*;
     use crate::client::convert::{PathAt, ToAbsolutePath};
 
@@ -131,6 +169,10 @@ mod linux_only {
         argv: *const *const libc::c_char,
         envp: *const *const libc::c_char,
     ) -> c_int {
+        #[expect(
+            clippy::no_effect_underscore_binding,
+            reason = "suppresses unused warning on *::original"
+        )]
         let _unused = execvpe::original;
         handle_exec(ExecResolveConfig::search_path_enabled(None), file, argv, envp)
     }
@@ -148,17 +190,23 @@ mod linux_only {
         envp: *const *mut libc::c_char,
         flags: c_int, // TODO: conform to semantics of flags
     ) -> libc::c_int {
+        #[expect(
+            clippy::no_effect_underscore_binding,
+            reason = "suppresses unused warning on *::original"
+        )]
         let _unused = execveat::original;
+        // SAFETY: PathAt wraps a valid dirfd and pathname pointer from the interposed execveat call
         let abs_path_result = unsafe {
             PathAt(dirfd, pathname).to_absolute_path(|path| {
                 let Some(path) = path else {
                     return Ok(None);
                 };
-                Ok(Some(CString::new(path.deref()).unwrap()))
+                Ok(Some(CString::new(&**path).unwrap()))
             })
         };
         let abs_path = match abs_path_result {
             Ok(None) => {
+                // SAFETY: forwarding the original arguments to the real execveat syscall
                 return unsafe { execveat::original()(dirfd, pathname, argv, envp, flags) };
             }
             Ok(Some(path)) => path.as_ptr(),
@@ -180,8 +228,12 @@ mod linux_only {
         argv: *const *const libc::c_char,
         envp: *const *const libc::c_char,
     ) -> libc::c_int {
+        #[expect(
+            clippy::no_effect_underscore_binding,
+            reason = "suppresses unused warning on *::original"
+        )]
         let _unused = fexecve::original;
-        let prog = format!("/proc/self/fd/{}\0", fd);
+        let prog = format!("/proc/self/fd/{fd}\0");
         let prog = prog.as_ptr();
         handle_exec(ExecResolveConfig::search_path_disabled(), prog.cast(), argv, envp)
     }

@@ -26,7 +26,7 @@ use super::{
 use crate::{Session, session::execute::spawn::SpawnTrackResult};
 
 /// Internal error type used to abort execution when errors occur.
-/// This error is swallowed in Session::execute and never exposed externally.
+/// This error is swallowed in `Session::execute` and never exposed externally.
 #[derive(Debug)]
 struct ExecutionAborted;
 
@@ -39,6 +39,7 @@ struct ExecutionContext<'a> {
 }
 
 impl ExecutionContext<'_> {
+    #[expect(clippy::future_not_send, reason = "uses !Send types internally")]
     async fn execute_item_kind(
         &mut self,
         display: Option<&ExecutionItemDisplay>,
@@ -84,7 +85,9 @@ impl ExecutionContext<'_> {
                         self.event_handler.handle_event(ExecutionEvent {
                             execution_id,
                             kind: ExecutionEventKind::Error {
-                                message: format!("Cycle dependencies detected: {cycle:?}"),
+                                message: vite_str::format!(
+                                    "Cycle dependencies detected: {cycle:?}"
+                                ),
                             },
                         });
 
@@ -95,7 +98,7 @@ impl ExecutionContext<'_> {
                 let ordered_executions =
                     node_indices.into_iter().map(|id| graph.remove_node(id).unwrap());
                 for task_execution in ordered_executions {
-                    for item in task_execution.items.iter() {
+                    for item in &task_execution.items {
                         match &item.kind {
                             ExecutionItemKind::Leaf(leaf_kind) => {
                                 self.execute_leaf(Some(&item.execution_item_display), leaf_kind)
@@ -115,12 +118,17 @@ impl ExecutionContext<'_> {
                 }
             }
             ExecutionItemKind::Leaf(leaf_execution_kind) => {
+                #[expect(
+                    clippy::large_futures,
+                    reason = "recursive execution creates large futures"
+                )]
                 self.execute_leaf(display, leaf_execution_kind).await?;
             }
         }
         Ok(())
     }
 
+    #[expect(clippy::future_not_send, reason = "uses !Send types internally")]
     async fn execute_leaf(
         &mut self,
         display: Option<&ExecutionItemDisplay>,
@@ -144,7 +152,7 @@ impl ExecutionContext<'_> {
                 });
 
                 // Execute the in-process command
-                let execution_output = in_process_execution.execute().await;
+                let execution_output = in_process_execution.execute();
                 self.event_handler.handle_event(ExecutionEvent {
                     execution_id,
                     kind: ExecutionEventKind::Output {
@@ -165,12 +173,21 @@ impl ExecutionContext<'_> {
                 });
             }
             LeafExecutionKind::Spawn(spawn_execution) => {
+                #[expect(
+                    clippy::large_futures,
+                    reason = "spawn execution with cache management creates large futures"
+                )]
                 self.execute_spawn(execution_id, display, spawn_execution).await?;
             }
         }
         Ok(())
     }
 
+    #[expect(clippy::future_not_send, reason = "uses !Send types internally")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "sequential cache check, execute, and update steps are clearer in one function"
+    )]
     async fn execute_spawn(
         &mut self,
         execution_id: ExecutionId,
@@ -183,7 +200,7 @@ impl ExecutionContext<'_> {
         //    We need to know the status before emitting Start event so users
         //    see cache status immediately when execution begins
         let (cache_status, cached_value) = if let Some(cache_metadata) = cache_metadata {
-            match self.cache.try_hit(cache_metadata, &*self.cache_base_path).await {
+            match self.cache.try_hit(cache_metadata, self.cache_base_path).await {
                 Ok(Ok(cached)) => (
                     // Cache hit - we can replay the cached outputs
                     CacheStatus::Hit { replayed_duration: cached.duration },
@@ -199,7 +216,7 @@ impl ExecutionContext<'_> {
                     self.event_handler.handle_event(ExecutionEvent {
                         execution_id,
                         kind: ExecutionEventKind::Error {
-                            message: format!("Cache lookup failed: {err}"),
+                            message: vite_str::format!("Cache lookup failed: {err}"),
                         },
                     });
                     return Err(ExecutionAborted);
@@ -248,16 +265,17 @@ impl ExecutionContext<'_> {
 
         // 4. Execute spawn (cache miss or disabled)
         //    Track file system access if caching is enabled (for future cache updates)
-        let mut track_result_with_cache_metadata = if let Some(cache_metadata) = cache_metadata {
-            Some((SpawnTrackResult::default(), cache_metadata))
-        } else {
-            None
-        };
+        let mut track_result_with_cache_metadata =
+            cache_metadata.map(|cache_metadata| (SpawnTrackResult::default(), cache_metadata));
 
         // Execute command with tracking, emitting output events in real-time
+        #[expect(
+            clippy::large_futures,
+            reason = "spawn_with_tracking manages process I/O and creates a large future"
+        )]
         let result = match spawn_with_tracking(
             &spawn_execution.spawn_command,
-            &*self.cache_base_path,
+            self.cache_base_path,
             |kind, content| {
                 self.event_handler.handle_event(ExecutionEvent {
                     execution_id,
@@ -279,7 +297,7 @@ impl ExecutionContext<'_> {
                 self.event_handler.handle_event(ExecutionEvent {
                     execution_id,
                     kind: ExecutionEventKind::Error {
-                        message: format!("Failed to spawn process: {err}"),
+                        message: vite_str::format!("Failed to spawn process: {err}"),
                     },
                 });
                 return Err(ExecutionAborted);
@@ -292,24 +310,26 @@ impl ExecutionContext<'_> {
         {
             if result.exit_status.success() {
                 // Execution succeeded, attempt cache update
-                let fingerprint_ignores =
-                    cache_metadata.spawn_fingerprint.fingerprint_ignores().map(|v| v.as_slice());
+                let fingerprint_ignores = cache_metadata
+                    .spawn_fingerprint
+                    .fingerprint_ignores()
+                    .map(std::vec::Vec::as_slice);
                 match PostRunFingerprint::create(
                     &track_result.path_reads,
-                    &*self.cache_base_path,
+                    self.cache_base_path,
                     fingerprint_ignores,
                 ) {
                     Ok(post_run_fingerprint) => {
-                        let cache_value = CommandCacheValue {
+                        let new_cache_value = CommandCacheValue {
                             post_run_fingerprint,
                             std_outputs: track_result.std_outputs.clone().into(),
                             duration: result.duration,
                         };
-                        if let Err(err) = self.cache.update(cache_metadata, cache_value).await {
+                        if let Err(err) = self.cache.update(cache_metadata, new_cache_value).await {
                             self.event_handler.handle_event(ExecutionEvent {
                                 execution_id,
                                 kind: ExecutionEventKind::Error {
-                                    message: format!("Failed to update cache: {err}"),
+                                    message: vite_str::format!("Failed to update cache: {err}"),
                                 },
                             });
                             return Err(ExecutionAborted);
@@ -320,7 +340,9 @@ impl ExecutionContext<'_> {
                         self.event_handler.handle_event(ExecutionEvent {
                             execution_id,
                             kind: ExecutionEventKind::Error {
-                                message: format!("Failed to create post-run fingerprint: {err}"),
+                                message: vite_str::format!(
+                                    "Failed to create post-run fingerprint: {err}"
+                                ),
                             },
                         });
                         return Err(ExecutionAborted);
@@ -348,13 +370,14 @@ impl ExecutionContext<'_> {
     }
 }
 
-impl<'a> Session<'a> {
+impl Session<'_> {
     /// Execute an execution plan, reporting events to the provided reporter.
     ///
     /// Returns Err(ExitStatus) to suggest the caller to abort and exit the process with the given exit status.
     ///
-    /// The return type isn't just ExitStatus because we want to distinguish between normal successful execution,
+    /// The return type isn't just `ExitStatus` because we want to distinguish between normal successful execution,
     /// and execution that failed and needs to exit with a specific code which can be zero.
+    #[expect(clippy::future_not_send, reason = "uses !Send types internally")]
     pub(crate) async fn execute(
         &self,
         plan: ExecutionPlan,
@@ -367,7 +390,7 @@ impl<'a> Session<'a> {
                 reporter.handle_event(ExecutionEvent {
                     execution_id: ExecutionId::zero(),
                     kind: ExecutionEventKind::Error {
-                        message: format!("Failed to initialize cache: {err}"),
+                        message: vite_str::format!("Failed to initialize cache: {err}"),
                     },
                 });
                 return Err(ExitStatus(1));
@@ -383,6 +406,10 @@ impl<'a> Session<'a> {
 
         // Execute and swallow ExecutionAborted error
         // display is None for top-level execution
+        #[expect(
+            clippy::large_futures,
+            reason = "top-level execution dispatches the entire task graph"
+        )]
         let _ = execution_context.execute_item_kind(None, plan.root_node()).await;
 
         // Always call post_execution, whether execution succeeded or failed

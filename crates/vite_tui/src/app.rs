@@ -22,8 +22,18 @@ pub struct App {
     action_rx: mpsc::UnboundedReceiver<Action>,
 
     tasks_list: TasksList,
+    #[expect(
+        clippy::disallowed_types,
+        reason = "vite_tui is a standalone TUI app, not using vite_str"
+    )]
     tasks_pane: FxHashMap</* task name */ String, TasksPane>,
     left_panel_area: Rect,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl App {
@@ -99,7 +109,10 @@ impl App {
                         if size > 0 {
                             processed_buf.extend_from_slice(&buf[..size]);
                             let bytes = processed_buf.iter().copied().collect();
-                            if action_tx.send(Action::Task { task: task.clone(), bytes }).is_err() {
+                            if action_tx
+                                .send(Action::Task { task: task.clone().into_boxed_str(), bytes })
+                                .is_err()
+                            {
                                 break;
                             }
                             // Clear the processed portion of the buffer
@@ -223,7 +236,7 @@ impl App {
                 Action::Resize(w, h) => self.handle_resize(tui, w, h)?,
                 Action::Render => self.render(tui)?,
                 Action::Task { task, bytes } => {
-                    if let Some(pane) = self.tasks_pane.get_mut(&task) {
+                    if let Some(pane) = self.tasks_pane.get_mut(&*task) {
                         pane.process(&bytes);
                     }
                 }
@@ -242,10 +255,15 @@ impl App {
         Ok(())
     }
 
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "vite_tui is a standalone TUI app, not using vite_str"
+    )]
     fn render(&mut self, tui: &mut Tui) -> Result<()> {
         tui.draw(|frame| {
             if let Err(err) = self.draw(frame) {
-                let _ = self.action_tx.send(Action::Error(format!("Failed to draw: {err:?}")));
+                let _ =
+                    self.action_tx.send(Action::Error(format!("Failed to draw: {err:?}").into()));
             }
         })?;
         Ok(())

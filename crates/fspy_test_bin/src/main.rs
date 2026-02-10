@@ -1,3 +1,4 @@
+#[expect(clippy::unimplemented, reason = "fspy_test_bin is a test-only binary for Linux")]
 #[cfg(not(target_os = "linux"))]
 fn main() {
     unimplemented!("fspy_test_bin is only for Linux");
@@ -42,6 +43,6 @@ fn main() {
         "execve" => {
             let _ = std::process::Command::new(path).spawn();
         }
-        _ => panic!("unknown action: {}", action),
+        _ => panic!("unknown action: {action}"),
     }
 }

@@ -1,3 +1,7 @@
+#[expect(
+    clippy::disallowed_types,
+    reason = "vite_tui is a standalone TUI app, not using vite_path/vite_str"
+)]
 use std::{env, path::PathBuf, sync::LazyLock};
 
 // use derive_deref::{Deref, DerefMut};
@@ -24,6 +28,11 @@ use directories::ProjectDirs;
 // pub styles: Styles,
 // }
 
+#[expect(
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+    reason = "vite_tui is a standalone TUI app, not using vite_str"
+)]
 pub static PROJECT_NAME: LazyLock<String> =
     LazyLock::new(|| env!("CARGO_CRATE_NAME").to_uppercase());
 // pub static DATA_FOLDER: LazyLock<Option<PathBuf>> =
@@ -78,6 +87,10 @@ pub static PROJECT_NAME: LazyLock<String> =
 // }
 // }
 
+#[expect(
+    clippy::disallowed_types,
+    reason = "vite_tui is a standalone TUI app, not using vite_path"
+)]
 pub fn get_data_dir() -> PathBuf {
     project_directory().map_or_else(
         || PathBuf::from(".").join(".data"),

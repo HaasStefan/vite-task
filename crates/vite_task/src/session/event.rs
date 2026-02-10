@@ -1,6 +1,7 @@
 use std::{process::ExitStatus, time::Duration};
 
 use bstr::BString;
+use vite_str::Str;
 // Re-export ExecutionItemDisplay from vite_task_plan since it's the canonical definition
 pub use vite_task_plan::ExecutionItemDisplay;
 
@@ -38,21 +39,25 @@ pub enum CacheUpdateStatus {
 }
 
 #[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "CacheMiss variant is intentionally large and infrequently cloned"
+)]
 pub enum CacheStatus {
     Disabled(CacheDisabledReason),
     Miss(CacheMiss),
     Hit { replayed_duration: Duration },
 }
 
-/// Convert ExitStatus to an i32 exit code.
-/// On Unix, if terminated by signal, returns 128 + signal_number.
-pub fn exit_status_to_code(status: &ExitStatus) -> i32 {
+/// Convert `ExitStatus` to an i32 exit code.
+/// On Unix, if terminated by signal, returns 128 + `signal_number`.
+pub fn exit_status_to_code(status: ExitStatus) -> i32 {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
         status.code().unwrap_or_else(|| {
             // Process was terminated by signal, use Unix convention: 128 + signal
-            status.signal().map(|sig| 128 + sig).unwrap_or(1)
+            status.signal().map_or(1, |sig| 128 + sig)
         })
     }
     #[cfg(not(unix))]
@@ -66,11 +71,11 @@ pub fn exit_status_to_code(status: &ExitStatus) -> i32 {
 pub struct ExecutionId(u32);
 
 impl ExecutionId {
-    pub(crate) fn zero() -> Self {
+    pub(crate) const fn zero() -> Self {
         Self(0)
     }
 
-    pub(crate) fn next(&self) -> Self {
+    pub(crate) const fn next(self) -> Self {
         Self(self.0.checked_add(1).expect("ExecutionId overflow"))
     }
 }
@@ -82,9 +87,13 @@ pub struct ExecutionEvent {
 }
 
 #[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "event variants are consumed once and not stored in collections"
+)]
 pub enum ExecutionEventKind {
     Start { display: Option<ExecutionItemDisplay>, cache_status: CacheStatus },
     Output { kind: OutputKind, content: BString },
-    Error { message: String },
+    Error { message: Str },
     Finish { status: Option<ExitStatus>, cache_update_status: CacheUpdateStatus },
 }

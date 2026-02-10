@@ -1,3 +1,4 @@
+#[expect(clippy::disallowed_types, reason = "vite_str defines Str using std types internally")]
 use std::{
     borrow::Borrow,
     ffi::OsStr,
@@ -79,7 +80,9 @@ impl AsRef<str> for Str {
         self.0.as_ref()
     }
 }
+#[expect(clippy::disallowed_types, reason = "vite_str provides Path interop via AsRef")]
 impl AsRef<Path> for Str {
+    #[expect(clippy::disallowed_types, reason = "fn signature uses std Path")]
     fn as_ref(&self) -> &Path {
         self.0.as_ref()
     }
@@ -130,6 +133,7 @@ impl<Context> Decode<Context> for Str {
         decoder.claim_container_read::<u8>(len)?;
 
         let mut compact_str = CompactString::with_capacity(len);
+        // SAFETY: we write exactly `len` bytes into the spare capacity, validate UTF-8, then set length
         unsafe {
             let buf = &mut compact_str.as_mut_bytes()[..len];
             decoder.reader().read(buf)?;
@@ -147,7 +151,9 @@ impl From<&str> for Str {
     }
 }
 
+#[expect(clippy::disallowed_types, reason = "vite_str provides String conversion via From")]
 impl From<String> for Str {
+    #[expect(clippy::disallowed_types, reason = "fn signature uses std String")]
     fn from(value: String) -> Self {
         Self(value.into())
     }
@@ -161,7 +167,7 @@ impl From<CompactString> for Str {
 
 impl From<Str> for Arc<str> {
     fn from(value: Str) -> Self {
-        Arc::from(value.as_str())
+        Self::from(value.as_str())
     }
 }
 
@@ -182,6 +188,7 @@ mod ts_impl {
 
     use super::Str;
 
+    #[expect(clippy::disallowed_types, reason = "ts-rs trait requires returning String")]
     impl TS for Str {
         type OptionInnerType = Self;
         type WithoutGenerics = Self;

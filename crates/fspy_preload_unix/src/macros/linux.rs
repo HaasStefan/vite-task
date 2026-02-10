@@ -38,10 +38,11 @@ pub(crate) use intercept;
 
 #[cfg(test)]
 #[doc(hidden)]
-pub(crate) fn symbol_exists(name: &str) -> bool {
+pub fn symbol_exists(name: &str) -> bool {
     use std::ffi::CString;
 
     let name = CString::new(name).unwrap();
+    // SAFETY: dlsym with RTLD_DEFAULT searches for the symbol in the default shared object search order
     !unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr().cast()) }.is_null()
 }
 
@@ -62,10 +63,15 @@ macro_rules! intercept_inner {
             }
         };
         mod $name {
-            #[allow(unused)]
+            #[expect(clippy::allow_attributes, reason = "using allow because unused_imports may or may not fire depending on macro expansion")]
+            #[allow(unused_imports, reason = "glob import brings types into scope for macro-generated code")]
             use super::*;
             pub unsafe fn original() -> $fn_sig {
-                static LAZY: std::sync::LazyLock<$fn_sig> = std::sync::LazyLock::new(|| unsafe {
+                static LAZY: std::sync::LazyLock<$fn_sig> = std::sync::LazyLock::new(||
+                    // SAFETY: dlsym with RTLD_NEXT returns the next symbol in the dynamic linking order,
+                    // and transmute converts the resulting function pointer to the expected function signature.
+                    // The caller guarantees the symbol name matches the expected function signature via the macro invocation.
+                    unsafe {
                     ::core::mem::transmute(::libc::dlsym(
                         ::libc::RTLD_NEXT,
                         ::core::concat!(::core::stringify!($name), "\0").as_ptr().cast(),
