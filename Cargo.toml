@@ -59,6 +59,7 @@ const_format = "0.2.34"
 constcat = "0.6.1"
 copy_dir = "0.1.3"
 cow-utils = "0.1.3"
+cp_r = "0.5.2"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 csv-async = { version = "1.3.1", features = ["tokio"] }
 ctor = "0.6"
@@ -89,11 +90,14 @@ os_str_bytes = "7.1.1"
 ouroboros = "0.18.5"
 owo-colors = "4.1.0"
 passfd = { git = "https://github.com/polachok/passfd", rev = "d55881752c16aced1a49a75f9c428d38d3767213", default-features = false }
+pathdiff = "0.2.3"
 petgraph = "0.8.2"
 phf = { version = "0.11.3", features = ["macros"] }
 portable-pty = "0.9.0"
 pretty_assertions = "1.4.1"
 pty_terminal = { path = "crates/pty_terminal" }
+pty_terminal_test = { path = "crates/pty_terminal_test" }
+pty_terminal_test_client = { path = "crates/pty_terminal_test_client" }
 rand = "0.9.1"
 ratatui = "0.30.0"
 rayon = "1.10.0"

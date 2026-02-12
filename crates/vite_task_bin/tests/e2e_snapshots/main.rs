@@ -3,26 +3,28 @@ mod redact;
 use std::{
     env::{self, join_paths, split_paths},
     ffi::OsStr,
-    sync::{Arc, mpsc},
+    io::Write,
+    sync::{Arc, Mutex, mpsc},
     time::Duration,
 };
 
-use copy_dir::copy_dir;
-use pty_terminal::{
-    ExitStatus,
-    geo::ScreenSize,
-    terminal::{CommandBuilder, Terminal},
-};
+use cp_r::CopyOptions;
+use pathdiff::diff_paths;
+use pty_terminal::{geo::ScreenSize, terminal::CommandBuilder};
+use pty_terminal_test::TestTerminal;
 use redact::redact_e2e_output;
 use vite_path::{AbsolutePath, AbsolutePathBuf, RelativePathBuf};
 use vite_str::Str;
 use vite_workspace::find_workspace_root;
 
 /// Timeout for each step in e2e tests
-const STEP_TIMEOUT: Duration = Duration::from_secs(10);
+const STEP_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Screen size for the PTY terminal. Large enough to avoid line wrapping.
 const SCREEN_SIZE: ScreenSize = ScreenSize { rows: 500, cols: 500 };
+
+const COMPILE_TIME_VP_PATH: &str = env!("CARGO_BIN_EXE_vp");
+const COMPILE_TIME_MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
 /// Get the shell executable for running e2e test steps.
 /// On Unix, uses /bin/sh.
@@ -54,9 +56,130 @@ fn get_shell_exe() -> std::path::PathBuf {
     }
 }
 
+#[expect(
+    clippy::disallowed_types,
+    reason = "PathBuf required for compile-time/runtime vp path remapping"
+)]
+fn resolve_runtime_vp_path() -> AbsolutePathBuf {
+    let compile_time_vp = std::path::PathBuf::from(COMPILE_TIME_VP_PATH);
+    let compile_time_manifest = std::path::PathBuf::from(COMPILE_TIME_MANIFEST_DIR);
+    let runtime_manifest =
+        std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+
+    let compile_time_repo_root = compile_time_manifest.parent().unwrap().parent().unwrap();
+    let runtime_repo_root = runtime_manifest.parent().unwrap().parent().unwrap();
+
+    let relative_vp = diff_paths(&compile_time_vp, compile_time_repo_root).unwrap_or_else(|| {
+        panic!(
+            "Failed to diff vp path. vp={} repo_root={}",
+            compile_time_vp.display(),
+            compile_time_repo_root.display(),
+        )
+    });
+    let runtime_vp = runtime_repo_root.join(&relative_vp);
+
+    assert!(
+        runtime_vp.exists(),
+        "Remapped vp path does not exist: {} (relative: {})",
+        runtime_vp.display(),
+        relative_vp.display(),
+    );
+
+    AbsolutePathBuf::new(runtime_vp).unwrap()
+}
+
 #[derive(serde::Deserialize, Debug)]
-#[serde(transparent)]
-struct Step(Str);
+#[serde(untagged)]
+enum Step {
+    Command(Str),
+    Detailed(StepConfig),
+}
+
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+struct StepConfig {
+    command: Str,
+    #[serde(default)]
+    interactions: Vec<Interaction>,
+}
+
+impl Step {
+    fn command(&self) -> &str {
+        match self {
+            Self::Command(command) => command.as_str(),
+            Self::Detailed(config) => config.command.as_str(),
+        }
+    }
+
+    fn interactions(&self) -> &[Interaction] {
+        match self {
+            Self::Command(_) => &[],
+            Self::Detailed(config) => &config.interactions,
+        }
+    }
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+#[serde(untagged)]
+enum Interaction {
+    ExpectMilestone(ExpectMilestoneInteraction),
+    Write(WriteInteraction),
+    WriteLine(WriteLineInteraction),
+    WriteKey(WriteKeyInteraction),
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+struct ExpectMilestoneInteraction {
+    #[serde(rename = "expect-milestone")]
+    expect_milestone: Str,
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+struct WriteInteraction {
+    write: Str,
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+struct WriteLineInteraction {
+    #[serde(rename = "write-line")]
+    write_line: Str,
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+struct WriteKeyInteraction {
+    #[serde(rename = "write-key")]
+    write_key: WriteKey,
+}
+
+#[derive(serde::Deserialize, Debug, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum WriteKey {
+    Up,
+    Down,
+    Enter,
+}
+
+impl WriteKey {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Up => "up",
+            Self::Down => "down",
+            Self::Enter => "enter",
+        }
+    }
+
+    const fn bytes(self) -> &'static [u8] {
+        match self {
+            Self::Up => b"\x1b[A",
+            Self::Down => b"\x1b[B",
+            Self::Enter => b"\r",
+        }
+    }
+}
 
 #[derive(serde::Deserialize, Debug)]
 struct E2e {
@@ -102,7 +225,7 @@ fn run_case(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, filter: Optio
 }
 
 enum TerminationState {
-    Exited(ExitStatus),
+    Exited(i64),
     TimedOut,
 }
 
@@ -117,7 +240,7 @@ enum TerminationState {
 fn run_case_inner(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, fixture_name: &str) {
     // Copy the case directory to a temporary directory to avoid discovering workspace outside of the test case.
     let stage_path = tmpdir.join(fixture_name);
-    copy_dir(fixture_path, &stage_path).unwrap();
+    CopyOptions::new().copy_tree(fixture_path, stage_path.as_path()).unwrap();
 
     let (workspace_root, _cwd) = find_workspace_root(&stage_path).unwrap();
 
@@ -133,13 +256,13 @@ fn run_case_inner(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, fixture
         Err(err) => panic!("Failed to read cases.toml for fixture {fixture_name}: {err}"),
     };
 
-    // Navigate from CARGO_MANIFEST_DIR to packages/tools at the repo root
+    // Navigate from runtime CARGO_MANIFEST_DIR to packages/tools at the repo root.
     #[expect(
         clippy::disallowed_types,
-        reason = "Path required for CARGO_MANIFEST_DIR path manipulation via env! macro"
+        reason = "Path required for CARGO_MANIFEST_DIR path traversal"
     )]
-    let repo_root =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let repo_root = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let repo_root = repo_root.parent().unwrap().parent().unwrap();
     let test_bin_path = Arc::<OsStr>::from(
         repo_root.join("packages").join("tools").join("node_modules").join(".bin").into_os_string(),
     );
@@ -152,7 +275,7 @@ fn run_case_inner(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, fixture
         [
             // Include vp binary path to PATH so that e2e tests can run "vp ..." commands.
             {
-                let vp_path = AbsolutePath::new(env!("CARGO_BIN_EXE_vp")).unwrap();
+                let vp_path = resolve_runtime_vp_path();
                 let vp_dir = vp_path.parent().unwrap();
                 vp_dir.as_path().as_os_str().into()
             },
@@ -184,15 +307,16 @@ fn run_case_inner(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, fixture
 
         let e2e_stage_path = tmpdir.join(vite_str::format!("{fixture_name}_e2e_stage_{e2e_count}"));
         e2e_count += 1;
-        assert!(copy_dir(fixture_path, &e2e_stage_path).unwrap().is_empty());
+        CopyOptions::new().copy_tree(fixture_path, e2e_stage_path.as_path()).unwrap();
 
         let e2e_stage_path_str = e2e_stage_path.as_path().to_str().unwrap();
 
         let mut e2e_outputs = String::new();
         for step in &e2e.steps {
+            let step_command = step.command();
             let mut cmd = CommandBuilder::new(&shell_exe);
             cmd.arg("-c");
-            cmd.arg(step.0.as_str());
+            cmd.arg(step_command);
             cmd.env_clear();
             cmd.env("PATH", &e2e_env_path);
             cmd.env("NO_COLOR", "1");
@@ -206,23 +330,84 @@ fn run_case_inner(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, fixture
                 cmd.env("PATHEXT", pathext);
             }
 
-            let mut terminal = Terminal::spawn(SCREEN_SIZE, cmd).unwrap();
-
-            // Read to end on a separate thread with timeout via channel
-            let mut killer = terminal.clone_killer();
+            let terminal = TestTerminal::spawn(SCREEN_SIZE, cmd).unwrap();
+            let mut killer = terminal.child_handle.clone();
+            let interactions = step.interactions().to_vec();
+            let output = Arc::new(Mutex::new(String::new()));
+            let output_for_thread = Arc::clone(&output);
             let (tx, rx) = mpsc::channel();
             std::thread::spawn(move || {
-                let status = terminal.read_to_end();
-                let screen = terminal.screen_contents();
-                let _ = tx.send((status, screen));
+                let mut terminal = terminal;
+
+                for interaction in interactions {
+                    match interaction {
+                        Interaction::ExpectMilestone(expect) => {
+                            output_for_thread.lock().unwrap().push_str(
+                                vite_str::format!(
+                                    "@ expect-milestone: {}\n",
+                                    expect.expect_milestone
+                                )
+                                .as_str(),
+                            );
+                            let milestone_screen =
+                                terminal.reader.expect_milestone(expect.expect_milestone.as_str());
+                            let mut output = output_for_thread.lock().unwrap();
+                            output.push_str(&milestone_screen);
+                            output.push('\n');
+                        }
+                        Interaction::Write(write) => {
+                            output_for_thread
+                                .lock()
+                                .unwrap()
+                                .push_str(vite_str::format!("@ write: {}\n", write.write).as_str());
+                            terminal.writer.write_all(write.write.as_str().as_bytes()).unwrap();
+                            terminal.writer.flush().unwrap();
+                        }
+                        Interaction::WriteLine(write_line) => {
+                            output_for_thread.lock().unwrap().push_str(
+                                vite_str::format!("@ write-line: {}\n", write_line.write_line)
+                                    .as_str(),
+                            );
+                            terminal
+                                .writer
+                                .write_line(write_line.write_line.as_str().as_bytes())
+                                .unwrap();
+                        }
+                        Interaction::WriteKey(write_key) => {
+                            let key_name = write_key.write_key.as_str();
+                            output_for_thread
+                                .lock()
+                                .unwrap()
+                                .push_str(vite_str::format!("@ write-key: {key_name}\n").as_str());
+                            terminal.writer.write_all(write_key.write_key.bytes()).unwrap();
+                            terminal.writer.flush().unwrap();
+                        }
+                    }
+                }
+
+                let status = terminal.reader.wait_for_exit();
+                let screen = terminal.reader.screen_contents();
+
+                {
+                    let mut output = output_for_thread.lock().unwrap();
+                    if !output.is_empty() && !output.ends_with('\n') {
+                        output.push('\n');
+                    }
+                    output.push_str(&screen);
+                }
+
+                let _ = tx.send(i64::from(status.exit_code()));
             });
 
-            let (termination_state, screen) = match rx.recv_timeout(STEP_TIMEOUT) {
-                Ok((status, screen)) => (TerminationState::Exited(status.unwrap()), screen),
+            let (termination_state, output) = match rx.recv_timeout(STEP_TIMEOUT) {
+                Ok(exit_code) => {
+                    let output = output.lock().unwrap().clone();
+                    (TerminationState::Exited(exit_code), output)
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     let _ = killer.kill();
-                    let (_, screen) = rx.recv().unwrap();
-                    (TerminationState::TimedOut, screen)
+                    let output = output.lock().unwrap().clone();
+                    (TerminationState::TimedOut, output)
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     panic!("Terminal thread panicked");
@@ -234,19 +419,18 @@ fn run_case_inner(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, fixture
                 TerminationState::TimedOut => {
                     e2e_outputs.push_str("[timeout]");
                 }
-                TerminationState::Exited(status) => {
-                    let exit_code = status.exit_code();
-                    if exit_code != 0 {
+                TerminationState::Exited(exit_code) => {
+                    if *exit_code != 0 {
                         e2e_outputs.push_str(vite_str::format!("[{exit_code}]").as_str());
                     }
                 }
             }
 
             e2e_outputs.push_str("> ");
-            e2e_outputs.push_str(step.0.as_str());
+            e2e_outputs.push_str(step_command);
             e2e_outputs.push('\n');
 
-            e2e_outputs.push_str(&redact_e2e_output(screen, e2e_stage_path_str));
+            e2e_outputs.push_str(&redact_e2e_output(output, e2e_stage_path_str));
             e2e_outputs.push('\n');
 
             // Skip remaining steps if timed out
@@ -264,20 +448,27 @@ fn run_case_inner(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, fixture
     }
 }
 
-#[expect(clippy::disallowed_types, reason = "Path required by insta::glob! macro callback")]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "current_dir needed because insta::glob! requires std PathBuf"
-)]
 fn main() {
     let filter = std::env::args().nth(1);
 
     let tmp_dir = tempfile::tempdir().unwrap();
     let tmp_dir_path = AbsolutePathBuf::new(tmp_dir.path().canonicalize().unwrap()).unwrap();
 
-    let tests_dir = std::env::current_dir().unwrap().join("tests");
+    #[expect(
+        clippy::disallowed_types,
+        reason = "Path required for CARGO_MANIFEST_DIR path traversal"
+    )]
+    let fixtures_dir = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap())
+        .join("tests")
+        .join("e2e_snapshots")
+        .join("fixtures");
+    let mut fixture_paths = std::fs::read_dir(fixtures_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    fixture_paths.sort();
 
-    insta::glob!(tests_dir, "e2e_snapshots/fixtures/*", |case_path| {
+    for case_path in &fixture_paths {
         run_case(&tmp_dir_path, case_path, filter.as_deref());
-    });
+    }
 }

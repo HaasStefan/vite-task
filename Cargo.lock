@@ -602,6 +602,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "417bef24afe1460300965a25ff4a24b8b45ad011948302ec221e8a0a81eb2c79"
 
 [[package]]
+name = "cp_r"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "837ca07dfd27a2663ac7c4701bb35856b534c2a61dd47af06ccf65d3bec79ebc"
+dependencies = [
+ "filetime",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2223,6 +2232,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "pathdiff"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
+
+[[package]]
 name = "peg"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2491,6 +2506,24 @@ dependencies = [
  "terminal_size",
  "vt100",
 ]
+
+[[package]]
+name = "pty_terminal_test"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "ctor",
+ "ntest",
+ "portable-pty",
+ "pty_terminal",
+ "pty_terminal_test_client",
+ "subprocess_test",
+]
+
+[[package]]
+name = "pty_terminal_test_client"
+version = "0.0.0"
 
 [[package]]
 name = "quote"
@@ -3816,11 +3849,15 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "copy_dir",
  "cow-utils",
+ "cp_r",
+ "crossterm",
  "insta",
  "jsonc-parser",
+ "pathdiff",
  "pty_terminal",
+ "pty_terminal_test",
+ "pty_terminal_test_client",
  "regex",
  "rustc-hash",
  "serde",

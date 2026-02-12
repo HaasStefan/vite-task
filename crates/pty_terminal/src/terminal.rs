@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     io::{Read, Write},
     sync::{Arc, Mutex, OnceLock},
     thread,
@@ -9,26 +10,58 @@ use portable_pty::{ChildKiller, ExitStatus, MasterPty};
 
 use crate::geo::ScreenSize;
 
-/// A headless terminal
-pub struct Terminal {
-    master: Box<dyn MasterPty + Send>,
-    parser: vt100::Parser<Vt100Callbacks>,
-    child_killer: Box<dyn ChildKiller + Send + Sync>,
+/// The read half of a PTY connection. Implements [`Read`].
+///
+/// Reading feeds data through an internal vt100 parser (shared with [`PtyWriter`]),
+/// keeping `screen_contents()` up-to-date with parsed terminal output.
+pub struct PtyReader {
     reader: Box<dyn Read + Send>,
+    parser: Arc<Mutex<vt100::Parser<Vt100Callbacks>>>,
+}
+
+/// The write half of a PTY connection. Implements [`Write`].
+///
+/// The writer is shared with `Vt100Callbacks` (for DSR query responses) and the
+/// background child-monitoring thread (which sets it to `None` on child exit).
+pub struct PtyWriter {
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    parser: Arc<Mutex<vt100::Parser<Vt100Callbacks>>>,
+    master: Box<dyn MasterPty + Send>,
+}
 
-    /// Unprocessed data buffer for `read_until`
-    read_until_buffer: Vec<u8>,
-
-    /// Exit status from the child process, set once by background thread
+/// A cloneable handle to a child process spawned in a PTY.
+pub struct ChildHandle {
+    child_killer: Box<dyn ChildKiller + Send + Sync>,
     exit_status: Arc<OnceLock<ExitStatus>>,
+}
+
+impl Clone for ChildHandle {
+    fn clone(&self) -> Self {
+        Self {
+            child_killer: self.child_killer.clone_killer(),
+            exit_status: Arc::clone(&self.exit_status),
+        }
+    }
+}
+
+/// A headless terminal consisting of a PTY reader, writer, and a child process handle.
+pub struct Terminal {
+    pub pty_reader: PtyReader,
+    pub pty_writer: PtyWriter,
+    pub child_handle: ChildHandle,
 }
 
 struct Vt100Callbacks {
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    unhandled_osc_sequences: VecDeque<Vec<Vec<u8>>>,
 }
 
 impl vt100::Callbacks for Vt100Callbacks {
+    fn unhandled_osc(&mut self, _screen: &mut vt100::Screen, params: &[&[u8]]) {
+        let owned: Vec<Vec<u8>> = params.iter().map(|p| p.to_vec()).collect();
+        self.unhandled_osc_sequences.push_back(owned);
+    }
+
     fn unhandled_csi(
         &mut self,
         screen: &mut vt100::Screen,
@@ -50,6 +83,157 @@ impl vt100::Callbacks for Vt100Callbacks {
                 let _ = writer.write_all(response.as_bytes());
             }
         }
+    }
+}
+
+impl Read for PtyReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.reader.read(buf)?;
+        if n > 0 {
+            self.parser.lock().unwrap().process(&buf[..n]);
+        }
+        Ok(n)
+    }
+}
+
+impl Write for PtyWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut guard =
+            self.writer.lock().map_err(|e| std::io::Error::other(format!("Poisoned lock: {e}")))?;
+
+        guard.as_mut().map_or_else(
+            || Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Child process has exited")),
+            |writer| writer.write(buf),
+        )
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut guard =
+            self.writer.lock().map_err(|e| std::io::Error::other(format!("Poisoned lock: {e}")))?;
+
+        guard.as_mut().map_or(Ok(()), Write::flush)
+    }
+}
+
+impl PtyReader {
+    /// Returns the current terminal screen contents as a string (parsed by the vt100 emulator).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parser lock is poisoned.
+    #[must_use]
+    pub fn screen_contents(&self) -> String {
+        self.parser.lock().unwrap().screen().contents()
+    }
+
+    /// Drains and returns all unhandled OSC sequences received since the last call.
+    ///
+    /// Each entry is a list of byte-vector parameters from a single OSC sequence
+    /// (`ESC ] param1 ; param2 ; ... ST`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parser lock is poisoned.
+    #[must_use]
+    pub fn take_unhandled_osc_sequences(&self) -> VecDeque<Vec<Vec<u8>>> {
+        std::mem::take(&mut self.parser.lock().unwrap().callbacks_mut().unhandled_osc_sequences)
+    }
+
+    /// Returns the current cursor position as `(row, col)`, both 0-indexed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parser lock is poisoned.
+    #[must_use]
+    pub fn cursor_position(&self) -> (u16, u16) {
+        self.parser.lock().unwrap().screen().cursor_position()
+    }
+}
+
+impl PtyWriter {
+    /// Returns `true` if the child process write channel has been closed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the writer lock is poisoned.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.writer.lock().unwrap().is_none()
+    }
+
+    /// Writes `line` followed by a platform-appropriate line ending to the child process.
+    ///
+    /// On Unix, appends `\n`. On Windows `ConPTY`, appends `\r\n` for proper line handling.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the child process has exited or writing fails.
+    pub fn write_line(&mut self, line: &[u8]) -> std::io::Result<()> {
+        self.write_all(line)?;
+
+        #[cfg(not(target_os = "windows"))]
+        self.write_all(b"\n")?;
+
+        #[cfg(target_os = "windows")]
+        self.write_all(b"\r\n")?;
+
+        self.flush()
+    }
+
+    /// Sends Ctrl+C (SIGINT) to the child process.
+    ///
+    /// Writes ETX (0x03) to the PTY. On Unix, the terminal driver converts this
+    /// to SIGINT for the child's process group. On Windows, `ConPTY` intercepts
+    /// the byte and generates `CTRL_C_EVENT` for the child.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the child process has already exited or writing fails.
+    pub fn send_ctrl_c(&mut self) -> std::io::Result<()> {
+        self.write_all(&[0x03])?;
+        self.flush()
+    }
+
+    /// Resizes the terminal to the given size.
+    ///
+    /// On Unix, delivers SIGWINCH to the child process. On Windows, `ConPTY` resizes synchronously.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the PTY cannot be resized.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parser lock is poisoned.
+    pub fn resize(&self, size: ScreenSize) -> anyhow::Result<()> {
+        self.master.resize(portable_pty::PtySize {
+            rows: size.rows,
+            cols: size.cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+
+        self.parser.lock().unwrap().screen_mut().set_size(size.rows, size.cols);
+
+        Ok(())
+    }
+}
+
+impl ChildHandle {
+    /// Blocks until the child process has exited and returns its exit status.
+    #[must_use]
+    pub fn wait(&self) -> ExitStatus {
+        self.exit_status.wait().clone()
+    }
+
+    /// Kills the child process.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the child process cannot be killed.
+    pub fn kill(&mut self) -> anyhow::Result<()> {
+        self.child_killer.kill()?;
+        Ok(())
     }
 }
 
@@ -95,199 +279,20 @@ impl Terminal {
             }
         });
 
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            size.rows,
+            size.cols,
+            0,
+            Vt100Callbacks {
+                writer: Arc::clone(&writer),
+                unhandled_osc_sequences: VecDeque::new(),
+            },
+        )));
+
         Ok(Self {
-            master,
-            parser: vt100::Parser::new_with_callbacks(
-                size.rows,
-                size.cols,
-                0,
-                Vt100Callbacks { writer: Arc::clone(&writer) },
-            ),
-            child_killer,
-            reader,
-            read_until_buffer: Vec::new(),
-            writer,
-            exit_status,
+            pty_reader: PtyReader { reader, parser: Arc::clone(&parser) },
+            pty_writer: PtyWriter { writer, parser, master },
+            child_handle: ChildHandle { child_killer, exit_status },
         })
-    }
-
-    /// Read until the first occurrence of the expected string is found.
-    /// Multiple occurrences may be buffered internally. Keep calling with the same string to
-    /// find subsequent occurrences.
-    ///
-    /// However, `screen_contents` will reflect all data, including subsequent occurrences,
-    /// even before they are consumed by `read_until`. It is designed this way because the
-    /// screen must always have latest data for proper query responses.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the expected string is not found before EOF or if reading fails.
-    pub fn read_until(&mut self, expected: &str) -> anyhow::Result<()> {
-        let expected_bytes = expected.as_bytes();
-
-        let mut buf = [0u8; 8192];
-
-        loop {
-            // look for the expected str in buffer
-            // There could be buffered occurrences in the first iteration,
-            // or new data read from the previous iteration.
-            if let Some(pos) = self
-                .read_until_buffer
-                .windows(expected_bytes.len())
-                .position(|window| window == expected_bytes)
-            {
-                // Consume data in read_until_buffer before and including the expected str
-                let split_pos = pos + expected_bytes.len();
-                self.read_until_buffer.drain(0..split_pos);
-                return Ok(());
-            }
-
-            // Not found yet - read more data
-            let n = self.reader.read(&mut buf)?;
-
-            if n == 0 {
-                // EOF - expected string not found
-                return Err(anyhow::anyhow!("Expected string not found: {expected}"));
-            }
-
-            let data = &buf[..n];
-            // Feed data to parser, which updates screen state and handles control sequence queries.
-            self.parser.process(data);
-
-            self.read_until_buffer.extend_from_slice(data);
-        }
-    }
-
-    /// Kills the child process.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the child process cannot be killed.
-    pub fn kill(&mut self) -> anyhow::Result<()> {
-        self.child_killer.kill()?;
-        Ok(())
-    }
-
-    /// Reads all remaining output until the child process exits.
-    ///
-    /// Returns the exit status of the child process.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Reading from the PTY fails
-    /// - The exit status is not available (should not happen in normal operation)
-    ///
-    /// # Panics
-    ///
-    /// Panics if the writer lock is poisoned.
-    pub fn read_to_end(&mut self) -> anyhow::Result<ExitStatus> {
-        // `read_to_end` will move cursor to the end, so clear any buffered data for `read_until`
-        self.read_until_buffer.clear();
-
-        let mut buf = [0u8; 8192];
-        // Read all remaining data until EOF
-        loop {
-            let n = self.reader.read(&mut buf)?;
-            self.parser.process(&buf[..n]);
-            if n == 0 {
-                break;
-            }
-        }
-
-        // Wait for exit status to be set by background thread
-        let status = self.exit_status.wait().clone();
-
-        // Close the writer since the child has exited and all output has been consumed.
-        // This ensures subsequent write() calls fail immediately, rather than racing
-        // with the background thread which also closes the writer.
-        *self.writer.lock().unwrap() = None;
-
-        Ok(status)
-    }
-
-    /// Writes data to the child process's stdin.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the child process has already exited or if writing fails.
-    pub fn write(&self, data: &[u8]) -> anyhow::Result<()> {
-        // On Windows ConPTY, convert LF to CRLF for proper line handling
-        #[cfg(target_os = "windows")]
-        let converted: Vec<u8> = {
-            let mut result = Vec::new();
-            for &byte in data {
-                if byte == b'\n' {
-                    result.push(b'\r');
-                    result.push(b'\n');
-                } else {
-                    result.push(byte);
-                }
-            }
-            result
-        };
-
-        #[cfg(target_os = "windows")]
-        let data_to_write: &[u8] = &converted;
-
-        #[cfg(not(target_os = "windows"))]
-        let data_to_write: &[u8] = data;
-
-        let mut writer_guard = self
-            .writer
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Failed to acquire writer lock: {e}"))?;
-
-        if let Some(writer) = writer_guard.as_mut() {
-            writer.write_all(data_to_write)?;
-            writer.flush()?;
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("Cannot write: child process has exited"))
-        }
-    }
-
-    /// Sends Ctrl+C (SIGINT) to the child process.
-    ///
-    /// Writes ETX (0x03) to the PTY. On Unix, the terminal driver converts this
-    /// to SIGINT for the child's process group. On Windows, `ConPTY` intercepts
-    /// the byte and generates `CTRL_C_EVENT` for the child.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the child process has already exited or writing fails.
-    pub fn send_ctrl_c(&self) -> anyhow::Result<()> {
-        self.write(&[0x03])
-    }
-
-    /// Clones the child process killer for use from another thread.
-    #[must_use]
-    pub fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
-        self.child_killer.clone_killer()
-    }
-
-    #[must_use]
-    pub fn screen_contents(&self) -> String {
-        self.parser.screen().contents()
-    }
-
-    /// Resizes the terminal to the given size.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the PTY cannot be resized.
-    pub fn resize(&mut self, size: ScreenSize) -> anyhow::Result<()> {
-        // Resize the underlying PTY via portable-pty's MasterPty::resize
-        self.master.resize(portable_pty::PtySize {
-            rows: size.rows,
-            cols: size.cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
-
-        // Update the vt100 parser's internal screen dimensions
-        self.parser.screen_mut().set_size(size.rows, size.cols);
-
-        Ok(())
     }
 }
