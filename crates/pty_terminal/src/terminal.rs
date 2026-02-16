@@ -10,6 +10,8 @@ use portable_pty::{ChildKiller, ExitStatus, MasterPty};
 
 use crate::geo::ScreenSize;
 
+type ChildWaitResult = Result<ExitStatus, Arc<std::io::Error>>;
+
 /// The read half of a PTY connection. Implements [`Read`].
 ///
 /// Reading feeds data through an internal vt100 parser (shared with [`PtyWriter`]),
@@ -32,7 +34,7 @@ pub struct PtyWriter {
 /// A cloneable handle to a child process spawned in a PTY.
 pub struct ChildHandle {
     child_killer: Box<dyn ChildKiller + Send + Sync>,
-    exit_status: Arc<OnceLock<ExitStatus>>,
+    exit_status: Arc<OnceLock<ChildWaitResult>>,
 }
 
 impl Clone for ChildHandle {
@@ -221,9 +223,15 @@ impl PtyWriter {
 
 impl ChildHandle {
     /// Blocks until the child process has exited and returns its exit status.
-    #[must_use]
-    pub fn wait(&self) -> ExitStatus {
-        self.exit_status.wait().clone()
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if waiting for the child process exit status fails.
+    pub fn wait(&self) -> anyhow::Result<ExitStatus> {
+        match self.exit_status.wait() {
+            Ok(status) => Ok(status.clone()),
+            Err(error) => Err(anyhow::Error::new(Arc::clone(error))),
+        }
     }
 
     /// Kills the child process.
@@ -263,17 +271,14 @@ impl Terminal {
         let child_killer = child.clone_killer();
         drop(pty_pair.slave); // Critical: drop slave so EOF is signaled when child exits
         let master = pty_pair.master;
-        let exit_status: Arc<OnceLock<ExitStatus>> = Arc::new(OnceLock::new());
+        let exit_status: Arc<OnceLock<ChildWaitResult>> = Arc::new(OnceLock::new());
 
         // Background thread: wait for child to exit, set exit status, then close writer to trigger EOF
         thread::spawn({
             let writer = Arc::clone(&writer);
             let exit_status = Arc::clone(&exit_status);
             move || {
-                // Wait for child and set exit status
-                if let Ok(status) = child.wait() {
-                    let _ = exit_status.set(status);
-                }
+                let _ = exit_status.set(child.wait().map_err(Arc::new));
                 // Close writer to signal EOF to the reader
                 *writer.lock().unwrap() = None;
             }
