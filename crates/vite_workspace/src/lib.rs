@@ -1,5 +1,7 @@
 mod error;
 pub mod package;
+pub mod package_filter;
+pub mod package_graph;
 mod package_manager;
 
 use std::{collections::hash_map::Entry, fs, io, sync::Arc};
@@ -11,7 +13,7 @@ use vec1::smallvec_v1::SmallVec1;
 use vite_glob::GlobPatternSet;
 use vite_path::{AbsolutePath, AbsolutePathBuf, RelativePathBuf};
 use vite_str::Str;
-use wax::Glob;
+use wax::{Glob, walk::Entry as _};
 
 pub use crate::{
     error::Error,
@@ -76,7 +78,7 @@ impl WorkspaceMemberGlobs {
         // TODO: parallelize this
         for inclusion in inclusions {
             let glob = Glob::new(&inclusion)?;
-            for entry in glob.walk(workspace_root) {
+            for entry in glob.walk(workspace_root.as_path().to_path_buf()) {
                 let Ok(entry) = entry else {
                     continue;
                 };

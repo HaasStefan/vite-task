@@ -30,15 +30,7 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/explicit-deps-wo
         }
       }
     },
-    "neighbors": [
-      [
-        [
-          "<workspace>/packages/utils",
-          "build"
-        ],
-        "Topological"
-      ]
-    ]
+    "neighbors": []
   },
   {
     "key": [
@@ -61,25 +53,16 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/explicit-deps-wo
     },
     "neighbors": [
       [
-        [
-          "<workspace>/packages/app",
-          "build"
-        ],
-        "Explicit"
+        "<workspace>/packages/app",
+        "build"
       ],
       [
-        [
-          "<workspace>/packages/app",
-          "test"
-        ],
-        "Explicit"
+        "<workspace>/packages/app",
+        "test"
       ],
       [
-        [
-          "<workspace>/packages/utils",
-          "lint"
-        ],
-        "Explicit"
+        "<workspace>/packages/utils",
+        "lint"
       ]
     ]
   },
@@ -137,15 +120,7 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/explicit-deps-wo
         }
       }
     },
-    "neighbors": [
-      [
-        [
-          "<workspace>/packages/utils",
-          "test"
-        ],
-        "Topological"
-      ]
-    ]
+    "neighbors": []
   },
   {
     "key": [
@@ -231,11 +206,8 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/explicit-deps-wo
     },
     "neighbors": [
       [
-        [
-          "<workspace>/packages/core",
-          "clean"
-        ],
-        "Explicit"
+        "<workspace>/packages/core",
+        "clean"
       ]
     ]
   },
@@ -293,15 +265,7 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/explicit-deps-wo
         }
       }
     },
-    "neighbors": [
-      [
-        [
-          "<workspace>/packages/core",
-          "build"
-        ],
-        "Topological"
-      ]
-    ]
+    "neighbors": []
   },
   {
     "key": [
@@ -331,25 +295,12 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/explicit-deps-wo
     },
     "neighbors": [
       [
-        [
-          "<workspace>/packages/core",
-          "build"
-        ],
-        "Explicit"
+        "<workspace>/packages/core",
+        "build"
       ],
       [
-        [
-          "<workspace>/packages/core",
-          "lint"
-        ],
-        "Topological"
-      ],
-      [
-        [
-          "<workspace>/packages/utils",
-          "build"
-        ],
-        "Explicit"
+        "<workspace>/packages/utils",
+        "build"
       ]
     ]
   },
@@ -379,14 +330,6 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/explicit-deps-wo
         }
       }
     },
-    "neighbors": [
-      [
-        [
-          "<workspace>/packages/core",
-          "test"
-        ],
-        "Topological"
-      ]
-    ]
+    "neighbors": []
   }
 ]

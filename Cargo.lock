@@ -1590,7 +1590,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1604,15 +1604,6 @@ name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
-
-[[package]]
-name = "itertools"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1c173a5686ce8bfa551b3563d0c2170bf24ca44da99c7ca4bfdab5418c3fe57"
-dependencies = [
- "either",
-]
 
 [[package]]
 name = "itertools"
@@ -2261,6 +2252,12 @@ dependencies = [
  "libc",
  "tokio",
 ]
+
+[[package]]
+name = "path-clean"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17359afc20d7ab31fdb42bb844c8b3bb1dabd7dcf7e68428492da7f16966fcef"
 
 [[package]]
 name = "pathdiff"
@@ -3930,7 +3927,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "clap",
  "monostate",
  "petgraph",
  "pretty_assertions",
@@ -3939,7 +3935,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "ts-rs",
- "vec1",
  "vite_graph_ser",
  "vite_path",
  "vite_str",
@@ -4006,6 +4001,8 @@ dependencies = [
 name = "vite_workspace"
 version = "0.0.0"
 dependencies = [
+ "clap",
+ "path-clean",
  "petgraph",
  "rustc-hash",
  "serde",
@@ -4165,16 +4162,16 @@ dependencies = [
 
 [[package]]
 name = "wax"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d12a78aa0bab22d2f26ed1a96df7ab58e8a93506a3e20adb47c51a93b4e1357"
+checksum = "1f8cbf8125142b9b30321ac8721f54c52fbcd6659f76cf863d5e2e38c07a3d7b"
 dependencies = [
  "const_format",
- "itertools 0.11.0",
+ "itertools 0.14.0",
  "nom",
  "pori",
  "regex",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "walkdir",
 ]
 

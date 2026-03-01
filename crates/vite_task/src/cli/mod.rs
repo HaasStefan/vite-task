@@ -1,10 +1,11 @@
-use std::{iter, sync::Arc};
+use std::sync::Arc;
 
 use clap::Parser;
 use vite_path::AbsolutePath;
 use vite_str::Str;
-use vite_task_graph::{TaskSpecifier, query::TaskQueryKind};
+use vite_task_graph::{TaskSpecifier, query::TaskQuery};
 use vite_task_plan::plan_request::{PlanOptions, QueryPlanRequest};
+use vite_workspace::package_filter::{PackageQueryArgs, PackageQueryError};
 
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum CacheSubcommand {
@@ -13,19 +14,10 @@ pub enum CacheSubcommand {
 }
 
 /// Flags that control how a `run` command selects tasks.
-///
-/// Extracted as a separate struct so they can be cheaply `Copy`-ed
-/// before `RunCommand` is consumed.
-#[derive(Debug, Clone, Copy, clap::Args)]
-#[expect(clippy::struct_excessive_bools, reason = "CLI flags are naturally boolean")]
+#[derive(Debug, Clone, clap::Args)]
 pub struct RunFlags {
-    /// Run tasks found in all packages in the workspace, in topological order based on package dependencies.
-    #[clap(default_value = "false", short, long)]
-    pub recursive: bool,
-
-    /// Run tasks found in the current package and all its transitive dependencies, in topological order based on package dependencies.
-    #[clap(default_value = "false", short, long)]
-    pub transitive: bool,
+    #[clap(flatten)]
+    pub package_query: PackageQueryArgs,
 
     /// Do not run dependencies specified in `dependsOn` fields.
     #[clap(default_value = "false", long)]
@@ -145,11 +137,8 @@ pub enum CLITaskQueryError {
     #[error("no task specifier provided")]
     MissingTaskSpecifier,
 
-    #[error("--recursive and --transitive cannot be used together")]
-    RecursiveTransitiveConflict,
-
-    #[error("cannot specify package '{package_name}' for task '{task_name}' with --recursive")]
-    PackageNameSpecifiedWithRecursive { package_name: Str, task_name: Str },
+    #[error(transparent)]
+    PackageQuery(#[from] PackageQueryError),
 }
 
 impl ResolvedRunCommand {
@@ -157,45 +146,26 @@ impl ResolvedRunCommand {
     ///
     /// # Errors
     ///
-    /// Returns an error if `--recursive` and `--transitive` are both set,
-    /// or if a package name is specified with `--recursive`.
+    /// Returns an error if conflicting flags are set or if a `--filter` expression
+    /// cannot be parsed.
     pub fn into_query_plan_request(
         self,
         cwd: &Arc<AbsolutePath>,
     ) -> Result<QueryPlanRequest, CLITaskQueryError> {
-        let Self {
-            task_specifier,
-            flags: RunFlags { recursive, transitive, ignore_depends_on, .. },
-            additional_args,
-        } = self;
+        let task_specifier = self.task_specifier.ok_or(CLITaskQueryError::MissingTaskSpecifier)?;
 
-        let task_specifier = task_specifier.ok_or(CLITaskQueryError::MissingTaskSpecifier)?;
+        let (package_query, _is_cwd_only) =
+            self.flags.package_query.into_package_query(task_specifier.package_name, cwd)?;
 
-        let include_explicit_deps = !ignore_depends_on;
+        let include_explicit_deps = !self.flags.ignore_depends_on;
 
-        let query_kind = if recursive {
-            if transitive {
-                return Err(CLITaskQueryError::RecursiveTransitiveConflict);
-            }
-            let task_name = if let Some(package_name) = task_specifier.package_name {
-                return Err(CLITaskQueryError::PackageNameSpecifiedWithRecursive {
-                    package_name,
-                    task_name: task_specifier.task_name,
-                });
-            } else {
-                task_specifier.task_name
-            };
-            TaskQueryKind::Recursive { task_names: iter::once(task_name).collect() }
-        } else {
-            TaskQueryKind::Normal {
-                task_specifiers: iter::once(task_specifier).collect(),
-                cwd: Arc::clone(cwd),
-                include_topological_deps: transitive,
-            }
-        };
         Ok(QueryPlanRequest {
-            query: vite_task_graph::query::TaskQuery { kind: query_kind, include_explicit_deps },
-            plan_options: PlanOptions { extra_args: additional_args.into() },
+            query: TaskQuery {
+                package_query,
+                task_name: task_specifier.task_name,
+                include_explicit_deps,
+            },
+            plan_options: PlanOptions { extra_args: self.additional_args.into() },
         })
     }
 }

@@ -91,6 +91,7 @@ os_str_bytes = "7.1.1"
 ouroboros = "0.18.5"
 owo-colors = { version = "4.1.0", features = ["supports-colors"] }
 passfd = { git = "https://github.com/polachok/passfd", rev = "d55881752c16aced1a49a75f9c428d38d3767213", default-features = false }
+path-clean = "1.0.1"
 pathdiff = "0.2.3"
 petgraph = "0.8.2"
 phf = { version = "0.11.3", features = ["macros"] }
@@ -145,7 +146,7 @@ vite_task_graph = { path = "crates/vite_task_graph" }
 vite_task_plan = { path = "crates/vite_task_plan" }
 vite_workspace = { path = "crates/vite_workspace" }
 vt100 = "0.16.2"
-wax = "0.6.0"
+wax = "0.7.0"
 which = "8.0.0"
 widestring = "1.2.0"
 winapi = "0.3.9"

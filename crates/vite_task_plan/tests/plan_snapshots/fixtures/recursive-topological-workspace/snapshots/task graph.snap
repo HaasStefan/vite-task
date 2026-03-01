@@ -30,22 +30,7 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/recursive-topolo
         }
       }
     },
-    "neighbors": [
-      [
-        [
-          "<workspace>/packages/app",
-          "build"
-        ],
-        "Topological"
-      ],
-      [
-        [
-          "<workspace>/packages/core",
-          "build"
-        ],
-        "Topological"
-      ]
-    ]
+    "neighbors": []
   },
   {
     "key": [
@@ -101,15 +86,7 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/recursive-topolo
         }
       }
     },
-    "neighbors": [
-      [
-        [
-          "<workspace>/packages/utils",
-          "build"
-        ],
-        "Topological"
-      ]
-    ]
+    "neighbors": []
   },
   {
     "key": [
@@ -137,15 +114,7 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/recursive-topolo
         }
       }
     },
-    "neighbors": [
-      [
-        [
-          "<workspace>/packages/utils",
-          "test"
-        ],
-        "Topological"
-      ]
-    ]
+    "neighbors": []
   },
   {
     "key": [
@@ -229,15 +198,7 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/recursive-topolo
         }
       }
     },
-    "neighbors": [
-      [
-        [
-          "<workspace>/packages/core",
-          "build"
-        ],
-        "Topological"
-      ]
-    ]
+    "neighbors": []
   },
   {
     "key": [
@@ -265,14 +226,6 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/recursive-topolo
         }
       }
     },
-    "neighbors": [
-      [
-        [
-          "<workspace>/packages/core",
-          "test"
-        ],
-        "Topological"
-      ]
-    ]
+    "neighbors": []
   }
 ]
