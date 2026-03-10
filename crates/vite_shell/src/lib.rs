@@ -8,7 +8,7 @@ use brush_parser::{
         CommandPrefixOrSuffixItem, CommandSuffix, CompoundListItem, Pipeline, Program,
         SeparatorOperator, SimpleCommand, SourceLocation, Word,
     },
-    unquote_str,
+    word::{WordPiece, WordPieceWithSource},
 };
 use diff::Diff;
 use serde::{Deserialize, Serialize};
@@ -42,10 +42,52 @@ impl Display for TaskParsedCommand {
     }
 }
 
-#[expect(clippy::disallowed_types, reason = "brush_parser::unquote_str returns String")]
-fn unquote(word: &Word) -> String {
+/// Parser options matching those used in [`try_parse_as_and_list`].
+const PARSER_OPTIONS: ParserOptions = ParserOptions {
+    enable_extended_globbing: false,
+    posix_mode: true,
+    sh_mode: true,
+    tilde_expansion: false,
+};
+
+/// Remove shell quoting from a word value, respecting quoting context.
+///
+/// Uses `brush_parser::word::parse` to properly handle nested quoting
+/// (e.g. single quotes inside double quotes are preserved as literal characters).
+/// Returns `None` if the word contains expansions that cannot be statically resolved
+/// (parameter expansion, command substitution, arithmetic).
+fn unquote(word: &Word) -> Option<Str> {
     let Word { value, loc: _ } = word;
-    unquote_str(value.as_str())
+    let pieces = brush_parser::word::parse(value.as_str(), &PARSER_OPTIONS).ok()?;
+    let mut result = Str::with_capacity(value.len());
+    flatten_pieces(&pieces, &mut result)?;
+    Some(result)
+}
+
+/// Recursively extract literal text from parsed word pieces.
+///
+/// Returns `None` if any piece requires runtime expansion.
+fn flatten_pieces(pieces: &[WordPieceWithSource], result: &mut Str) -> Option<()> {
+    for piece in pieces {
+        match &piece.piece {
+            WordPiece::Text(s) | WordPiece::SingleQuotedText(s) | WordPiece::AnsiCQuotedText(s) => {
+                result.push_str(s);
+            }
+            // EscapeSequence contains the raw sequence (e.g. `\"` as two chars);
+            // the escaped character is everything after the leading backslash.
+            WordPiece::EscapeSequence(s) => {
+                result.push_str(s.strip_prefix('\\').unwrap_or(s));
+            }
+            WordPiece::DoubleQuotedSequence(inner)
+            | WordPiece::GettextDoubleQuotedSequence(inner) => {
+                flatten_pieces(inner, result)?;
+            }
+            // Tilde prefix, parameter expansion, command substitution, arithmetic
+            // cannot be statically resolved — bail out.
+            _ => return None,
+        }
+    }
+    Some(())
 }
 
 fn pipeline_to_command(pipeline: &Pipeline) -> Option<(TaskParsedCommand, Range<usize>)> {
@@ -78,7 +120,7 @@ fn pipeline_to_command(pipeline: &Pipeline) -> Option<(TaskParsedCommand, Range<
             let AssignmentValue::Scalar(value) = value else {
                 return None;
             };
-            envs.insert(name.as_str().into(), unquote(value).into());
+            envs.insert(name.as_str().into(), unquote(value)?);
         }
     }
     let mut args = Vec::<Str>::new();
@@ -87,23 +129,15 @@ fn pipeline_to_command(pipeline: &Pipeline) -> Option<(TaskParsedCommand, Range<
             let CommandPrefixOrSuffixItem::Word(word) = suffix_item else {
                 return None;
             };
-            args.push(unquote(word).into());
+            args.push(unquote(word)?);
         }
     }
-    Some((TaskParsedCommand { envs, program: unquote(program).into(), args }, range))
+    Some((TaskParsedCommand { envs, program: unquote(program)?, args }, range))
 }
 
 #[must_use]
 pub fn try_parse_as_and_list(cmd: &str) -> Option<Vec<(TaskParsedCommand, Range<usize>)>> {
-    let mut parser = Parser::new(
-        cmd.as_bytes(),
-        &ParserOptions {
-            enable_extended_globbing: false,
-            posix_mode: true,
-            sh_mode: true,
-            tilde_expansion: false,
-        },
-    );
+    let mut parser = Parser::new(cmd.as_bytes(), &PARSER_OPTIONS);
     let Program { complete_commands } = parser.parse_program().ok()?;
     let [compound_list] = complete_commands.as_slice() else {
         return None;
@@ -200,6 +234,66 @@ mod tests {
 
         // Verify the order is alphabetical (BTreeMap sorts by key)
         assert!(str1.starts_with("ALPHA=first MIDDLE=middle ZEBRA=last"));
+    }
+
+    #[test]
+    fn test_unquote_preserves_nested_quotes() {
+        // Single quotes inside double quotes are preserved
+        let cmd = r#"echo "hello 'world'""#;
+        let list = try_parse_as_and_list(cmd).unwrap();
+        assert_eq!(list[0].0.args[0].as_str(), "hello 'world'");
+
+        // Double quotes inside single quotes are preserved
+        let cmd = r#"echo 'hello "world"'"#;
+        let list = try_parse_as_and_list(cmd).unwrap();
+        assert_eq!(list[0].0.args[0].as_str(), "hello \"world\"");
+
+        // Backslash escaping in double quotes
+        let cmd = r#"echo "hello\"world""#;
+        let list = try_parse_as_and_list(cmd).unwrap();
+        assert_eq!(list[0].0.args[0].as_str(), "hello\"world");
+
+        // Backslash escaping outside quotes
+        let cmd = r"echo hello\ world";
+        let list = try_parse_as_and_list(cmd).unwrap();
+        assert_eq!(list[0].0.args[0].as_str(), "hello world");
+    }
+
+    #[test]
+    fn test_flatten_pieces_recursion() {
+        fn parse_and_flatten(input: &str) -> Option<Str> {
+            let pieces = brush_parser::word::parse(input, &PARSER_OPTIONS).ok()?;
+            let mut result = Str::default();
+            flatten_pieces(&pieces, &mut result)?;
+            Some(result)
+        }
+
+        // DoubleQuotedSequence containing Text + EscapeSequence + Text
+        assert_eq!(parse_and_flatten(r#""hello\"world""#).unwrap(), "hello\"world");
+
+        // DoubleQuotedSequence with single quotes preserved as literal text
+        assert_eq!(parse_and_flatten(r#""it's a 'test'""#).unwrap(), "it's a 'test'");
+
+        // Nested escape sequences inside double quotes
+        assert_eq!(parse_and_flatten(r#""a\\b""#).unwrap(), "a\\b");
+
+        // DoubleQuotedSequence bails on parameter expansion inside
+        assert!(parse_and_flatten(r#""hello $VAR""#).is_none());
+
+        // DoubleQuotedSequence bails on command substitution inside
+        assert!(parse_and_flatten(r#""hello $(cmd)""#).is_none());
+    }
+
+    #[test]
+    fn test_parse_urllib_prepare() {
+        let cmd = r#"node -e "const v = parseInt(process.versions.node, 10); if (v >= 20) require('child_process').execSync('vp config', {stdio: 'inherit'});""#;
+        let result = try_parse_as_and_list(cmd);
+        let (parsed, _) = &result.as_ref().unwrap()[0];
+        // Single quotes inside double quotes must be preserved as literal characters
+        assert_eq!(
+            parsed.args[1].as_str(),
+            "const v = parseInt(process.versions.node, 10); if (v >= 20) require('child_process').execSync('vp config', {stdio: 'inherit'});"
+        );
     }
 
     #[test]
