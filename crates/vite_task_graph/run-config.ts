@@ -22,7 +22,7 @@ export type Task = {
       /**
        * Environment variable names to be fingerprinted and passed to the task.
        */
-      envs?: Array<string>;
+      env?: Array<string>;
       /**
        * Environment variable names to be passed to the task without fingerprinting.
        */
@@ -38,7 +38,7 @@ export type Task = {
        *
        * Patterns are relative to the package directory.
        */
-      inputs?: Array<
+      input?: Array<
         | string
         | {
             /**
