@@ -121,7 +121,12 @@ steps = ["echo '' | vt run"]
 [[e2e]]
 name = "interactive select task from lib"
 cwd = "packages/lib"
-steps = [{ command = "vt run", interactions = [{ "expect-milestone" = "task-select::0" }, { "write-key" = "enter" }] }]
+steps = [
+  { command = "vt run", interactions = [
+    { "expect-milestone" = "task-select::0" },
+    { "write-key" = "enter" },
+  ] },
+]
 
 # Interactive: search for a task that only exists in another package
 [[e2e]]

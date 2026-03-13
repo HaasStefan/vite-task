@@ -10,7 +10,10 @@ steps = ["vt run build"]
 [[e2e]]
 name = "single task cache hit shows compact summary"
 cwd = "packages/a"
-steps = ["vt run build # first run, cache miss", "vt run build # second run, cache hit → compact summary"]
+steps = [
+  "vt run build # first run, cache miss",
+  "vt run build # second run, cache hit → compact summary",
+]
 
 # Multi-task (recursive), all cache miss → compact summary with 0 hits
 [[e2e]]
@@ -36,7 +39,10 @@ steps = ["vt run -r -v build"]
 # Multi-task with --verbose after cache hits
 [[e2e]]
 name = "multi task verbose with cache hits shows full summary"
-steps = ["vt run -r build # first run, populate cache", "vt run -r -v build # second run, verbose with cache hits"]
+steps = [
+  "vt run -r build # first run, populate cache",
+  "vt run -r -v build # second run, verbose with cache hits",
+]
 
 # --last-details with no previous run
 [[e2e]]

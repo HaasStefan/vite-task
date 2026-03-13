@@ -164,7 +164,14 @@ pub struct CommandFingerprint {
   "tasks": {
     "build": {
       "command": "vite build",
-      "env": ["NODE_ENV", "NODE_OPTIONS", "VITE_API_URL", "VITE_APP_TITLE", "VITE_PUBLIC_PATH", "VITE_BASE_URL"]
+      "env": [
+        "NODE_ENV",
+        "NODE_OPTIONS",
+        "VITE_API_URL",
+        "VITE_APP_TITLE",
+        "VITE_PUBLIC_PATH",
+        "VITE_BASE_URL"
+      ]
     }
   }
 }
