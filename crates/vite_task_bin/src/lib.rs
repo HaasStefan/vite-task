@@ -10,8 +10,8 @@ use rustc_hash::FxHashMap;
 use vite_path::AbsolutePath;
 use vite_str::Str;
 use vite_task::{
-    Command, EnabledCacheConfig, HandledCommand, ScriptCommand, SessionConfig, UserCacheConfig,
-    get_path_env, plan_request::SyntheticPlanRequest,
+    Command, EnabledCacheConfig, HandledCommand, ScriptCommand, SessionConfig, TaskErrorHints,
+    UserCacheConfig, get_path_env, plan_request::SyntheticPlanRequest,
 };
 
 #[derive(Debug, Default)]
@@ -136,6 +136,15 @@ impl vite_task::CommandHandler for CommandHandler {
                 }))
             }
             Args::Task(parsed) => Ok(HandledCommand::ViteTaskCommand(parsed)),
+        }
+    }
+
+    fn task_error_hints(&self) -> TaskErrorHints {
+        TaskErrorHints {
+            task_list_hint: Str::from("Run `vt run` to browse available tasks."),
+            task_source_hint: Str::from(
+                "Check `vite-task.json` and `package.json` scripts where tasks are defined.",
+            ),
         }
     }
 }

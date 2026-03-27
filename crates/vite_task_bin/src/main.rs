@@ -20,7 +20,7 @@ async fn run() -> anyhow::Result<ExitStatus> {
     let mut owned_config = OwnedSessionConfig::default();
     let session = Session::init(owned_config.as_config())?;
     match args {
-        Args::Task(parsed) => session.main(parsed).await,
+        Args::Task(parsed) => Ok(session.main(parsed).await),
         args => {
             // If env FOO is set, run `print-env FOO` via Session::exec before proceeding.
             // In vite-plus, Session::exec is used for auto-install.
