@@ -7,8 +7,9 @@ use monostate::MustBe;
 use rustc_hash::FxHashSet;
 use serde::Serialize;
 pub use user::{
-    EnabledCacheConfig, ResolvedGlobalCacheConfig, UserCacheConfig, UserGlobalCacheConfig,
-    UserInputEntry, UserInputsConfig, UserRunConfig, UserTaskConfig,
+    AutoInput, EnabledCacheConfig, GlobWithBase, InputBase, ResolvedGlobalCacheConfig,
+    UserCacheConfig, UserGlobalCacheConfig, UserInputEntry, UserInputsConfig, UserRunConfig,
+    UserTaskConfig,
 };
 use vite_path::AbsolutePath;
 use vite_str::Str;
@@ -153,29 +154,53 @@ impl ResolvedInputConfig {
 
         for entry in entries {
             match entry {
-                UserInputEntry::Auto { auto: true } => includes_auto = true,
-                UserInputEntry::Auto { auto: false } => {} // Ignore {auto: false}
+                UserInputEntry::Auto(AutoInput { auto: true }) => includes_auto = true,
+                UserInputEntry::Auto(AutoInput { auto: false }) => {} // Ignore {auto: false}
                 UserInputEntry::Glob(pattern) => {
-                    if let Some(negated) = pattern.strip_prefix('!') {
-                        let resolved = resolve_glob_to_workspace_relative(
-                            negated,
-                            package_dir,
-                            workspace_root,
-                        )?;
-                        negative_globs.insert(resolved);
-                    } else {
-                        let resolved = resolve_glob_to_workspace_relative(
-                            pattern.as_str(),
-                            package_dir,
-                            workspace_root,
-                        )?;
-                        positive_globs.insert(resolved);
-                    }
+                    Self::insert_glob(
+                        pattern.as_str(),
+                        package_dir,
+                        workspace_root,
+                        &mut positive_globs,
+                        &mut negative_globs,
+                    )?;
+                }
+                UserInputEntry::GlobWithBase(GlobWithBase { pattern, base }) => {
+                    let base_dir = match base {
+                        InputBase::Package => package_dir,
+                        InputBase::Workspace => workspace_root,
+                    };
+                    Self::insert_glob(
+                        pattern.as_str(),
+                        base_dir,
+                        workspace_root,
+                        &mut positive_globs,
+                        &mut negative_globs,
+                    )?;
                 }
             }
         }
 
         Ok(Self { includes_auto, positive_globs, negative_globs })
+    }
+
+    /// Insert a glob pattern into the appropriate set (positive or negative),
+    /// resolving it relative to the given base directory.
+    fn insert_glob(
+        pattern: &str,
+        base_dir: &AbsolutePath,
+        workspace_root: &AbsolutePath,
+        positive_globs: &mut BTreeSet<Str>,
+        negative_globs: &mut BTreeSet<Str>,
+    ) -> Result<(), ResolveTaskConfigError> {
+        if let Some(negated) = pattern.strip_prefix('!') {
+            let resolved = resolve_glob_to_workspace_relative(negated, base_dir, workspace_root)?;
+            negative_globs.insert(resolved);
+        } else {
+            let resolved = resolve_glob_to_workspace_relative(pattern, base_dir, workspace_root)?;
+            positive_globs.insert(resolved);
+        }
+        Ok(())
     }
 }
 
@@ -300,7 +325,7 @@ impl ResolvedTaskConfig {
 
 // Exact matches for common environment variables
 // Referenced from Turborepo's implementation:
-// https://github.com/vercel/turborepo/blob/26d309f073ca3ac054109ba0c29c7e230e7caac3/crates/turborepo-lib/src/task_hash.rs#L439
+// https://github.com/vercel/turborepo/blob/06ba8e2f7b8d7c7ff99edff7114e2584713e18c4/crates/turborepo-env/src/lib.rs#L20
 #[doc(hidden)] // exported for redacting snapshots in tests
 pub const DEFAULT_UNTRACKED_ENV: &[&str] = &[
     // System and shell
@@ -311,16 +336,22 @@ pub const DEFAULT_UNTRACKED_ENV: &[&str] = &[
     "SHELL",
     "PWD",
     "PATH",
+    // Linux/X11 session
+    "XDG_RUNTIME_DIR",
+    "XAUTHORITY",
+    "DBUS_SESSION_BUS_ADDRESS",
     // CI/CD environments
     "CI",
     // Node.js specific
     "NODE_OPTIONS",
-    "COREPACK_HOME",
+    "COREPACK_*",
     "NPM_CONFIG_STORE_DIR",
     "PNPM_HOME",
     // Library paths
     "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
     "DYLD_FALLBACK_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
     "LIBPATH",
     // Terminal/display
     "COLORTERM",
@@ -338,6 +369,10 @@ pub const DEFAULT_UNTRACKED_ENV: &[&str] = &[
     "NEXT_*",
     "USE_OUTPUT_FOR_EDGE_FUNCTIONS",
     "NOW_BUILDER",
+    "VC_MICROFRONTENDS_CONFIG_FILE_NAME",
+    // GitHub Actions
+    "GITHUB_*",
+    "RUNNER_*",
     // Windows specific
     "APPDATA",
     "PROGRAMDATA",
@@ -346,6 +381,9 @@ pub const DEFAULT_UNTRACKED_ENV: &[&str] = &[
     "USERPROFILE",
     "HOMEDRIVE",
     "HOMEPATH",
+    "WINDIR",
+    "ProgramFiles",
+    "ProgramFiles[(]x86[)]", // Parens escaped for glob syntax (Turborepo uses literal `ProgramFiles(x86)`)
     // IDE specific (exact matches)
     "ELECTRON_RUN_AS_NODE",
     "JB_INTERPRETER",
@@ -359,6 +397,8 @@ pub const DEFAULT_UNTRACKED_ENV: &[&str] = &[
     "COMPOSE_*",
     // Playwright specific
     "PLAYWRIGHT_*",
+    // Vite+ internal (not fingerprinted — internal state, not build-affecting)
+    "VP_*",
     // Token patterns
     "*_TOKEN",
 ];
@@ -415,7 +455,7 @@ mod tests {
     #[test]
     fn test_resolved_input_config_auto_only() {
         let (pkg, ws) = test_paths();
-        let user_inputs = vec![UserInputEntry::Auto { auto: true }];
+        let user_inputs = vec![UserInputEntry::Auto(AutoInput { auto: true })];
         let config = ResolvedInputConfig::from_user_config(Some(&user_inputs), &pkg, &ws).unwrap();
         assert!(config.includes_auto);
         assert!(config.positive_globs.is_empty());
@@ -425,7 +465,7 @@ mod tests {
     #[test]
     fn test_resolved_input_config_auto_false_ignored() {
         let (pkg, ws) = test_paths();
-        let user_inputs = vec![UserInputEntry::Auto { auto: false }];
+        let user_inputs = vec![UserInputEntry::Auto(AutoInput { auto: false })];
         let config = ResolvedInputConfig::from_user_config(Some(&user_inputs), &pkg, &ws).unwrap();
         assert!(!config.includes_auto);
         assert!(config.positive_globs.is_empty());
@@ -469,7 +509,7 @@ mod tests {
         let (pkg, ws) = test_paths();
         let user_inputs = vec![
             UserInputEntry::Glob("package.json".into()),
-            UserInputEntry::Auto { auto: true },
+            UserInputEntry::Auto(AutoInput { auto: true }),
             UserInputEntry::Glob("!node_modules/**".into()),
         ];
         let config = ResolvedInputConfig::from_user_config(Some(&user_inputs), &pkg, &ws).unwrap();
@@ -484,8 +524,10 @@ mod tests {
     fn test_resolved_input_config_globs_with_auto() {
         let (pkg, ws) = test_paths();
         // Globs with auto keeps inference enabled
-        let user_inputs =
-            vec![UserInputEntry::Glob("src/**/*.ts".into()), UserInputEntry::Auto { auto: true }];
+        let user_inputs = vec![
+            UserInputEntry::Glob("src/**/*.ts".into()),
+            UserInputEntry::Auto(AutoInput { auto: true }),
+        ];
         let config = ResolvedInputConfig::from_user_config(Some(&user_inputs), &pkg, &ws).unwrap();
         assert!(config.includes_auto);
     }
@@ -510,5 +552,80 @@ mod tests {
         let result = ResolvedInputConfig::from_user_config(Some(&user_inputs), &pkg, &ws);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ResolveTaskConfigError::GlobOutsideWorkspace { .. }));
+    }
+
+    #[test]
+    fn test_resolved_input_config_glob_with_workspace_base() {
+        let (pkg, ws) = test_paths();
+        let user_inputs = vec![UserInputEntry::GlobWithBase(GlobWithBase {
+            pattern: "configs/tsconfig.json".into(),
+            base: InputBase::Workspace,
+        })];
+        let config = ResolvedInputConfig::from_user_config(Some(&user_inputs), &pkg, &ws).unwrap();
+        assert!(!config.includes_auto);
+        assert_eq!(config.positive_globs.len(), 1);
+        // Workspace-base: should NOT have the package prefix
+        assert!(
+            config.positive_globs.contains("configs/tsconfig.json"),
+            "expected 'configs/tsconfig.json', got {:?}",
+            config.positive_globs
+        );
+    }
+
+    #[test]
+    fn test_resolved_input_config_negative_glob_with_workspace_base() {
+        let (pkg, ws) = test_paths();
+        let user_inputs = vec![UserInputEntry::GlobWithBase(GlobWithBase {
+            pattern: "!dist/**".into(),
+            base: InputBase::Workspace,
+        })];
+        let config = ResolvedInputConfig::from_user_config(Some(&user_inputs), &pkg, &ws).unwrap();
+        assert_eq!(config.negative_globs.len(), 1);
+        assert!(
+            config.negative_globs.contains("dist/**"),
+            "expected 'dist/**', got {:?}",
+            config.negative_globs
+        );
+    }
+
+    #[test]
+    fn test_resolved_input_config_glob_with_package_base_explicit() {
+        let (pkg, ws) = test_paths();
+        // Explicit "package" base should behave same as bare string
+        let user_inputs = vec![UserInputEntry::GlobWithBase(GlobWithBase {
+            pattern: "src/**/*.ts".into(),
+            base: InputBase::Package,
+        })];
+        let config = ResolvedInputConfig::from_user_config(Some(&user_inputs), &pkg, &ws).unwrap();
+        assert_eq!(config.positive_globs.len(), 1);
+        assert!(
+            config.positive_globs.contains("packages/my-pkg/src/**/*.ts"),
+            "expected 'packages/my-pkg/src/**/*.ts', got {:?}",
+            config.positive_globs
+        );
+    }
+
+    #[test]
+    fn test_resolved_input_config_mixed_bases() {
+        let (pkg, ws) = test_paths();
+        let user_inputs = vec![
+            UserInputEntry::Glob("src/**".into()),
+            UserInputEntry::GlobWithBase(GlobWithBase {
+                pattern: "configs/**".into(),
+                base: InputBase::Workspace,
+            }),
+            UserInputEntry::Auto(AutoInput { auto: true }),
+            UserInputEntry::GlobWithBase(GlobWithBase {
+                pattern: "!dist/**".into(),
+                base: InputBase::Workspace,
+            }),
+        ];
+        let config = ResolvedInputConfig::from_user_config(Some(&user_inputs), &pkg, &ws).unwrap();
+        assert!(config.includes_auto);
+        assert_eq!(config.positive_globs.len(), 2);
+        assert!(config.positive_globs.contains("packages/my-pkg/src/**"));
+        assert!(config.positive_globs.contains("configs/**"));
+        assert_eq!(config.negative_globs.len(), 1);
+        assert!(config.negative_globs.contains("dist/**"));
     }
 }

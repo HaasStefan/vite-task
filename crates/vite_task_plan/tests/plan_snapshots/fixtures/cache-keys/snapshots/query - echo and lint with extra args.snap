@@ -54,7 +54,7 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/cache-keys
               "task_name": "echo-and-lint",
               "package_path": "<workspace>/"
             },
-            "command": "vt lint --fix",
+            "command": "vt tool print lint --fix",
             "and_item_index": 1,
             "cwd": "<workspace>/"
           },
@@ -66,10 +66,12 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/cache-keys
                     "cwd": "",
                     "program_fingerprint": {
                       "OutsideWorkspace": {
-                        "program_name": "oxlint"
+                        "program_name": "vtt"
                       }
                     },
                     "args": [
+                      "print",
+                      "lint",
                       "--fix"
                     ],
                     "env_fingerprints": {
@@ -96,13 +98,15 @@ input_file: crates/vite_task_plan/tests/plan_snapshots/fixtures/cache-keys
                   }
                 },
                 "spawn_command": {
-                  "program_path": "<tools>/node_modules/.bin/oxlint",
+                  "program_path": "<tools>/vtt",
                   "args": [
+                    "print",
+                    "lint",
                     "--fix"
                   ],
                   "all_envs": {
                     "NO_COLOR": "1",
-                    "PATH": "<workspace>/node_modules/.bin:<tools>/node_modules/.bin"
+                    "PATH": "<workspace>/node_modules/.bin:<tools>"
                   },
                   "cwd": "<workspace>/"
                 }

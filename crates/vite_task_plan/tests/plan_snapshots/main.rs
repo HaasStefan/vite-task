@@ -166,27 +166,13 @@ fn run_case_inner(
         Err(err) => panic!("Failed to read cases.toml for fixture {fixture_name}: {err}"),
     };
 
-    // Navigate from CARGO_MANIFEST_DIR to packages/tools at the repo root
-    #[expect(
-        clippy::disallowed_types,
-        reason = "Path required for CARGO_MANIFEST_DIR path manipulation to locate packages/tools"
-    )]
-    let test_bin_path = {
-        let repo_root =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
-        Arc::<OsStr>::from(
-            repo_root
-                .join("packages")
-                .join("tools")
-                .join("node_modules")
-                .join(".bin")
-                .into_os_string(),
-        )
-    };
+    let fake_bin_dir = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap())
+        .join("tests/plan_snapshots/fake-bin");
+    let combined_path =
+        Arc::<OsStr>::from(std::ffi::OsString::from(fake_bin_dir.to_str().unwrap()));
 
-    // Add packages/tools to PATH so test programs (such as print-file) in fixtures can be found.
     let plan_envs: FxHashMap<Arc<OsStr>, Arc<OsStr>> = [
-        (Arc::<OsStr>::from(OsStr::new("PATH")), Arc::clone(&test_bin_path)),
+        (Arc::<OsStr>::from(OsStr::new("PATH")), combined_path),
         (Arc::<OsStr>::from(OsStr::new("NO_COLOR")), Arc::<OsStr>::from(OsStr::new("1"))),
     ]
     .into_iter()

@@ -1,0 +1,7 @@
+{
+  "name": "labeled-stdio-test",
+  "private": true,
+  "dependencies": {
+    "other": "workspace:*"
+  }
+}

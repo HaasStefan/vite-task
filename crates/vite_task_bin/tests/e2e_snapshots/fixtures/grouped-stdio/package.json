@@ -1,0 +1,7 @@
+{
+  "name": "grouped-stdio-test",
+  "private": true,
+  "dependencies": {
+    "other": "workspace:*"
+  }
+}

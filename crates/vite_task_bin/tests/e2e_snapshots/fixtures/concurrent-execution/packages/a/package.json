@@ -1,0 +1,8 @@
+{
+  "name": "@concurrent/a",
+  "scripts": {
+    "build": "vtt barrier ../../.barrier sync 2",
+    "test": "vtt barrier ../../.barrier test-sync 2 --exit=1",
+    "daemon": "vtt barrier ../../.barrier daemon-sync 2 --exit=1"
+  }
+}

@@ -8,7 +8,9 @@ use std::{io, path::Path};
 
 #[cfg(target_os = "linux")]
 use fspy_seccomp_unotify::supervisor::supervise;
-use fspy_shared::ipc::{NativeStr, PathAccess, channel::channel};
+#[cfg(not(target_env = "musl"))]
+use fspy_shared::ipc::NativeStr;
+use fspy_shared::ipc::{PathAccess, channel::channel};
 #[cfg(target_os = "macos")]
 use fspy_shared_unix::payload::Artifacts;
 use fspy_shared_unix::{
@@ -20,6 +22,7 @@ use futures_util::FutureExt;
 #[cfg(target_os = "linux")]
 use syscall_handler::SyscallHandler;
 use tokio::task::spawn_blocking;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     ChildTermination, Command, TrackedChild,
@@ -33,28 +36,39 @@ pub struct SpyImpl {
     #[cfg(target_os = "macos")]
     artifacts: Artifacts,
 
+    #[cfg(not(target_env = "musl"))]
     preload_path: Box<NativeStr>,
 }
 
+#[cfg(not(target_env = "musl"))]
 const PRELOAD_CDYLIB_BINARY: &[u8] = include_bytes!(env!("CARGO_CDYLIB_FILE_FSPY_PRELOAD_UNIX"));
 
 impl SpyImpl {
-    /// Initialize the fs access spy by writing the preload library on disk
-    pub fn init_in(dir: &Path) -> io::Result<Self> {
-        use const_format::formatcp;
-        use xxhash_rust::const_xxh3::xxh3_128;
+    /// Initialize the fs access spy by writing the preload library on disk.
+    ///
+    /// On musl targets, we don't build a preload library —
+    /// only seccomp-based tracking is used.
+    pub fn init_in(#[cfg_attr(target_env = "musl", allow(unused))] dir: &Path) -> io::Result<Self> {
+        #[cfg(not(target_env = "musl"))]
+        let preload_path = {
+            use const_format::formatcp;
+            use xxhash_rust::const_xxh3::xxh3_128;
 
-        use crate::artifact::Artifact;
+            use crate::artifact::Artifact;
 
-        const PRELOAD_CDYLIB: Artifact = Artifact {
-            name: "fspy_preload",
-            content: PRELOAD_CDYLIB_BINARY,
-            hash: formatcp!("{:x}", xxh3_128(PRELOAD_CDYLIB_BINARY)),
+            const PRELOAD_CDYLIB: Artifact = Artifact {
+                name: "fspy_preload",
+                content: PRELOAD_CDYLIB_BINARY,
+                hash: formatcp!("{:x}", xxh3_128(PRELOAD_CDYLIB_BINARY)),
+            };
+
+            let preload_cdylib_path = PRELOAD_CDYLIB.write_to(dir, ".dylib")?;
+            preload_cdylib_path.as_path().into()
         };
 
-        let preload_cdylib_path = PRELOAD_CDYLIB.write_to(dir, ".dylib")?;
         Ok(Self {
-            preload_path: preload_cdylib_path.as_path().into(),
+            #[cfg(not(target_env = "musl"))]
+            preload_path,
             #[cfg(target_os = "macos")]
             artifacts: {
                 let coreutils_path = macos_artifacts::COREUTILS_BINARY.write_to(dir, "")?;
@@ -67,7 +81,11 @@ impl SpyImpl {
         })
     }
 
-    pub(crate) async fn spawn(&self, mut command: Command) -> Result<TrackedChild, SpawnError> {
+    pub(crate) async fn spawn(
+        &self,
+        mut command: Command,
+        cancellation_token: CancellationToken,
+    ) -> Result<TrackedChild, SpawnError> {
         #[cfg(target_os = "linux")]
         let supervisor = supervise::<SyscallHandler>().map_err(SpawnError::Supervisor)?;
 
@@ -80,6 +98,7 @@ impl SpyImpl {
             #[cfg(target_os = "macos")]
             artifacts: self.artifacts.clone(),
 
+            #[cfg(not(target_env = "musl"))]
             preload_path: self.preload_path.clone(),
 
             #[cfg(target_os = "linux")]
@@ -129,7 +148,13 @@ impl SpyImpl {
             // Keep polling for the child to exit in the background even if `wait_handle` is not awaited,
             // because we need to stop the supervisor and lock the channel as soon as the child exits.
             wait_handle: tokio::spawn(async move {
-                let status = child.wait().await?;
+                let status = tokio::select! {
+                    status = child.wait() => status?,
+                    () = cancellation_token.cancelled() => {
+                        child.start_kill()?;
+                        child.wait().await?
+                    }
+                };
 
                 let arenas = std::iter::once(exec_resolve_accesses);
                 // Stop the supervisor and collect path accesses from it.

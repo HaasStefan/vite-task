@@ -2,7 +2,7 @@
   "cache": true,
   "tasks": {
     "hello": {
-      "command": "print-env FOO",
+      "command": "vtt print-env FOO",
       "env": ["FOO"],
       "cache": true
     }

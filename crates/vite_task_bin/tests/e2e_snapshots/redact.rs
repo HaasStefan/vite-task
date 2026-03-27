@@ -9,8 +9,13 @@ fn redact_string(s: &mut String, redactions: &[(&str, &str)]) {
     for (from, to) in redactions {
         if let Cow::Owned(mut replaced) = s.as_str().cow_replace(from, to) {
             if cfg!(windows) {
-                // Also replace with backslashes on Windows
+                // Normalize backslashes to forward slashes on Windows
                 replaced = replaced.cow_replace("\\", "/").into_owned();
+                // Collapse double slashes that arise when an escaped path separator (\\)
+                // is only partially replaced (e.g., Debug-format paths end with \\")
+                while replaced.contains("//") {
+                    replaced = replaced.cow_replace("//", "/").into_owned();
+                }
             }
             *s = replaced;
         }
@@ -23,28 +28,60 @@ fn redact_string(s: &mut String, redactions: &[(&str, &str)]) {
 )]
 pub fn redact_e2e_output(mut output: String, workspace_root: &str) -> String {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    // Get the packages/tools directory path
-    let tools_dir = std::path::Path::new(&manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("packages")
-        .join("tools");
-    let tools_dir_str = tools_dir.to_str().unwrap();
 
-    redact_string(
-        &mut output,
-        &[
-            (workspace_root, "<workspace>"),
-            (manifest_dir.as_str(), "<manifest_dir>"),
-            (tools_dir_str, "<tools>"),
-        ],
-    );
+    // On Windows, canonicalize() may produce verbatim paths (\\?\C:\...) while
+    // child processes report paths without the prefix. Try both variants.
+    let workspace_root_stripped = workspace_root.strip_prefix(r"\\?\").unwrap_or(workspace_root);
 
-    // Redact durations like "123ms" or "1.23s" to "<duration>ms" or "<duration>s"
-    let duration_regex = regex::Regex::new(r"\d+(\.\d+)?(ms|s)").unwrap();
+    // On Windows, paths displayed via Debug format ({:?}) have backslashes escaped
+    // to double-backslashes. Create escaped variants to match Debug-format output.
+    // The full escaped variant (with \\?\ prefix) must be tried first since it's
+    // the longest match and prevents leaving a stray "\\?\" in the output.
+    let workspace_root_full_escaped = {
+        use cow_utils::CowUtils as _;
+        workspace_root.cow_replace('\\', r"\\").into_owned()
+    };
+    let workspace_root_stripped_escaped = {
+        use cow_utils::CowUtils as _;
+        workspace_root_stripped.cow_replace('\\', r"\\").into_owned()
+    };
+
+    let mut redactions: Vec<(&str, &str)> = vec![
+        (workspace_root, "<workspace>"),
+        (workspace_root_stripped, "<workspace>"),
+        (manifest_dir.as_str(), "<manifest_dir>"),
+    ];
+
+    // Add escaped variants (longest first for correct matching)
+    if workspace_root_full_escaped != workspace_root {
+        redactions.insert(0, (&workspace_root_full_escaped, "<workspace>"));
+    }
+    if workspace_root_stripped_escaped != workspace_root_stripped
+        && workspace_root_stripped_escaped != workspace_root_full_escaped
+    {
+        redactions.insert(1, (&workspace_root_stripped_escaped, "<workspace>"));
+    }
+
+    redact_string(&mut output, &redactions);
+
+    // Redact durations like "0ns", "123ms" or "1.23s" to "<duration>"
+    let duration_regex = regex::Regex::new(r"\d+(\.\d+)?(ns|ms|s)").unwrap();
     output = duration_regex.replace_all(&output, "<duration>").into_owned();
+
+    // Normalize the ", <duration> saved" suffix in cache hit summaries.
+    // When tools are fast (e.g., Rust binaries), saved time may be 0ns and the
+    // runner omits the suffix entirely. Stripping it ensures stable snapshots.
+    let saved_regex = regex::Regex::new(r",? <duration> saved").unwrap();
+    output = saved_regex.replace_all(&output, "").into_owned();
+
+    // Strip "in total" from verbose performance summary (includes time details
+    // that may be omitted when saved time is 0).
+    {
+        use cow_utils::CowUtils as _;
+        if let Cow::Owned(replaced) = output.as_str().cow_replace(" in total", "") {
+            output = replaced;
+        }
+    }
 
     // Redact thread counts like "using 10 threads" to "using <n> threads"
     let thread_regex = regex::Regex::new(r"using \d+ threads").unwrap();

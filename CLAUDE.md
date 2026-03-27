@@ -99,11 +99,22 @@ Tasks are defined in `vite-task.json`:
       "cache": true,
       "env": ["NODE_ENV"],
       "untrackedEnv": ["CI"],
-      "input": ["src/**", "!dist/**", { "auto": true }]
+      "input": ["src/**", "!dist/**", { "auto": true }, { "pattern": "tsconfig.json", "base": "workspace" }]
     }
   }
 }
 ```
+
+## Internal vs Public Naming
+
+This repo uses internal names that differ from the public-facing product. In code comments, docs, and user-facing strings, use the public names:
+
+| Internal (this repo) | Public (Vite+)  |
+| -------------------- | --------------- |
+| `vt`                 | `vp`            |
+| `vite-task.json`     | `vite.config.*` |
+
+`vite-task.json` and `vt` are fine in implementation code, test fixtures, and CLAUDE.md itself — just not in doc comments or user-facing messages.
 
 ## Code Constraints
 
@@ -134,6 +145,10 @@ All code must work on both Unix and Windows without platform skipping:
 - Use `#[cfg(unix)]` / `#[cfg(windows)]` for platform-specific implementations
 - Platform differences should be handled gracefully, not skipped
 - After major changes to `fspy*` or platform-specific crates, run `just lint-linux` and `just lint-windows`
+
+## Changelog
+
+When a change is user-facing (new feature, changed behavior, bug fix, removal, or perf improvement), run `/update-changelog` to add an entry to `CHANGELOG.md`. Do not add entries for internal refactors, CI, dep bumps, test fixes, or docs changes.
 
 ## Quick Reference
 

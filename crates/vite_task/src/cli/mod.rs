@@ -7,6 +7,18 @@ use vite_task_graph::{TaskSpecifier, query::TaskQuery};
 use vite_task_plan::plan_request::{CacheOverride, PlanOptions, QueryPlanRequest};
 use vite_workspace::package_filter::{PackageQueryArgs, PackageQueryError};
 
+/// Controls how task output is displayed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum LogMode {
+    /// Output streams directly to the terminal as tasks produce it.
+    #[default]
+    Interleaved,
+    /// Each line is prefixed with `[packageName#taskName]`.
+    Labeled,
+    /// Output is buffered per task and printed as a block after each task completes.
+    Grouped,
+}
+
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum CacheSubcommand {
     /// Clean up all the cache
@@ -35,6 +47,10 @@ pub struct RunFlags {
     /// Force caching off for all tasks and scripts.
     #[clap(long, conflicts_with = "cache")]
     pub no_cache: bool,
+
+    /// How task output is displayed.
+    #[clap(long, default_value = "interleaved")]
+    pub log: LogMode,
 }
 
 impl RunFlags {
@@ -58,21 +74,30 @@ impl RunFlags {
 ///
 /// Contains the `--last-details` flag which is resolved into a separate
 /// `ResolvedCommand::RunLastDetails` variant internally.
+///
+/// `trailing_var_arg` at the command level makes clap stop matching flags once
+/// the trailing positional starts being filled. This means all tokens after the
+/// task name are passed through to the task verbatim, preventing flags like `-v`
+/// from being intercepted. Flags intended for `vp` itself (e.g. `--verbose`,
+/// `-r`) must appear **before** the task name.
+///
+/// See <https://github.com/voidzero-dev/vite-task/issues/285>.
 #[derive(Debug, clap::Parser)]
+#[command(trailing_var_arg = true)]
 pub struct RunCommand {
-    /// `packageName#taskName` or `taskName`. If omitted, lists all available tasks.
-    pub(crate) task_specifier: Option<Str>,
-
     #[clap(flatten)]
     pub(crate) flags: RunFlags,
-
-    /// Additional arguments to pass to the tasks
-    #[clap(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub(crate) additional_args: Vec<Str>,
 
     /// Display the detailed summary of the last run.
     #[clap(long, exclusive = true)]
     pub(crate) last_details: bool,
+
+    #[clap(
+        allow_hyphen_values = true,
+        value_names = ["TASK_SPECIFIER", "ADDITIONAL_ARGS"],
+        long_help = "Task to run, as `packageName#taskName` or just `taskName`.\nAny arguments after the task name are forwarded to the task process.\nRunning `vp run` without a task name shows an interactive task selector."
+    )]
+    pub(crate) task_and_args: Vec<Str>,
 }
 
 /// vite task CLI subcommands as parsed by clap.
@@ -144,13 +169,15 @@ pub struct ResolvedRunCommand {
 
 impl RunCommand {
     /// Convert to the resolved run command, stripping the `last_details` flag.
+    ///
+    /// Splits `task_and_args` into `task_specifier` (the first element) and
+    /// `additional_args` (everything that follows).
     #[must_use]
     pub(crate) fn into_resolved(self) -> ResolvedRunCommand {
-        ResolvedRunCommand {
-            task_specifier: self.task_specifier,
-            flags: self.flags,
-            additional_args: self.additional_args,
-        }
+        let mut iter = self.task_and_args.into_iter();
+        let task_specifier = iter.next();
+        let additional_args: Vec<Str> = iter.collect();
+        ResolvedRunCommand { task_specifier, flags: self.flags, additional_args }
     }
 }
 

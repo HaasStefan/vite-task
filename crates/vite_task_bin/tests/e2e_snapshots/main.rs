@@ -9,7 +9,6 @@ use std::{
 };
 
 use cp_r::CopyOptions;
-use pathdiff::diff_paths;
 use pty_terminal::{geo::ScreenSize, terminal::CommandBuilder};
 use pty_terminal_test::TestTerminal;
 use redact::redact_e2e_output;
@@ -24,9 +23,6 @@ const STEP_TIMEOUT: Duration =
 
 /// Screen size for the PTY terminal. Large enough to avoid line wrapping.
 const SCREEN_SIZE: ScreenSize = ScreenSize { rows: 500, cols: 500 };
-
-const COMPILE_TIME_VT_PATH: &str = env!("CARGO_BIN_EXE_vt");
-const COMPILE_TIME_MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
 /// Get the shell executable for running e2e test steps.
 /// On Unix, uses /bin/sh.
@@ -56,38 +52,6 @@ fn get_shell_exe() -> std::path::PathBuf {
     } else {
         std::path::PathBuf::from("/bin/sh")
     }
-}
-
-#[expect(
-    clippy::disallowed_types,
-    reason = "PathBuf required for compile-time/runtime vt path remapping"
-)]
-fn resolve_runtime_vt_path() -> AbsolutePathBuf {
-    let compile_time_vt = std::path::PathBuf::from(COMPILE_TIME_VT_PATH);
-    let compile_time_manifest = std::path::PathBuf::from(COMPILE_TIME_MANIFEST_DIR);
-    let runtime_manifest =
-        std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
-
-    let compile_time_repo_root = compile_time_manifest.parent().unwrap().parent().unwrap();
-    let runtime_repo_root = runtime_manifest.parent().unwrap().parent().unwrap();
-
-    let relative_vt = diff_paths(&compile_time_vt, compile_time_repo_root).unwrap_or_else(|| {
-        panic!(
-            "Failed to diff vt path. vt={} repo_root={}",
-            compile_time_vt.display(),
-            compile_time_repo_root.display(),
-        )
-    });
-    let runtime_vt = runtime_repo_root.join(&relative_vt);
-
-    assert!(
-        runtime_vt.exists(),
-        "Remapped vt path does not exist: {} (relative: {})",
-        runtime_vt.display(),
-        relative_vt.display(),
-    );
-
-    AbsolutePathBuf::new(runtime_vt).unwrap()
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -264,34 +228,17 @@ fn run_case_inner(tmpdir: &AbsolutePath, fixture_path: &std::path::Path, fixture
         Err(err) => panic!("Failed to read cases.toml for fixture {fixture_name}: {err}"),
     };
 
-    // Navigate from runtime CARGO_MANIFEST_DIR to packages/tools at the repo root.
-    #[expect(
-        clippy::disallowed_types,
-        reason = "Path required for CARGO_MANIFEST_DIR path traversal"
-    )]
-    let repo_root = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
-    let repo_root = repo_root.parent().unwrap().parent().unwrap();
-    let test_bin_path = Arc::<OsStr>::from(
-        repo_root.join("packages").join("tools").join("node_modules").join(".bin").into_os_string(),
-    );
-
     // Get shell executable for running steps
     let shell_exe = get_shell_exe();
 
-    // Prepare PATH for e2e tests
+    // Prepare PATH for e2e tests: include vt and vtt binary directories.
+    let bin_dirs: [Arc<OsStr>; 2] = ["CARGO_BIN_EXE_vt", "CARGO_BIN_EXE_vtt"].map(|var| {
+        let bin_path = env::var_os(var).unwrap_or_else(|| panic!("{var} not set"));
+        let bin = AbsolutePathBuf::new(std::path::PathBuf::from(bin_path)).unwrap();
+        Arc::<OsStr>::from(bin.parent().unwrap().as_path().as_os_str())
+    });
     let e2e_env_path = join_paths(
-        [
-            // Include vt binary path to PATH so that e2e tests can run "vt ..." commands.
-            {
-                let vt_path = resolve_runtime_vt_path();
-                let vt_dir = vt_path.parent().unwrap();
-                vt_dir.as_path().as_os_str().into()
-            },
-            // Include packages/tools to PATH so that e2e tests can run utilities such as replace-file-content.
-            test_bin_path,
-        ]
-        .into_iter()
-        .chain(
+        bin_dirs.into_iter().chain(
             // the existing PATH
             split_paths(&env::var_os("PATH").unwrap())
                 .map(|path| Arc::<OsStr>::from(path.into_os_string())),
