@@ -297,7 +297,7 @@ impl<'a> Session<'a> {
 
                     // Normalize the run_command for comparison by ignoring cache flags, which don't affect task selection.
                     let mut normalized_run_command = run_command.clone();
-                    normalized_run_command.flags.cache = false; // Ignore cache flags for the "bare" comparison, they don't affect task selection
+                    normalized_run_command.flags.cache = false;
 
                     if normalized_run_command != bare {
                         return Err(vite_task_plan::Error::MissingTaskSpecifier.into());
