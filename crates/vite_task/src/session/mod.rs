@@ -294,10 +294,14 @@ impl<'a> Session<'a> {
                     let (graph, is_cwd_only) =
                         self.plan_from_cli_run_resolved(cwd, run_command.clone()).await?;
 
-                    if graph.node_count() == 0 {
-                        // No tasks matched. With is_cwd_only (no scope flags) the
-                        // task name is a typo — show the selector. Otherwise error.
-                        if is_cwd_only {
+                    if graph.graph.node_count() == 0 {
+                        // No tasks matched. Show the interactive selector only when
+                        // the command has no scope flags and no execution flags
+                        // (concurrency-limit, parallel) — otherwise the user intended
+                        // a specific execution mode and a typo should be an error.
+                        let has_execution_flags = run_command.flags.concurrency_limit.is_some()
+                            || run_command.flags.parallel;
+                        if is_cwd_only && !has_execution_flags {
                             let qpr = self.handle_no_task(is_interactive, &run_command).await?;
                             self.plan_from_query(qpr).await?
                         } else {
@@ -348,7 +352,38 @@ impl<'a> Session<'a> {
                     Some(self.make_summary_writer()),
                     self.program_name.clone(),
                 ));
-                self.execute_graph(graph, builder).await.map_err(SessionError::EarlyExit)
+                // Don't let SIGINT/CTRL_C kill the runner. Child tasks receive
+                // the signal directly from the terminal driver and handle it
+                // themselves. Cancelling the interrupt token prevents scheduling
+                // new tasks and caching results of in-flight tasks.
+                //
+                // On Windows, an ancestor process (e.g. cargo) may have been
+                // created with CREATE_NEW_PROCESS_GROUP, which sets a per-process
+                // flag that silently drops CTRL_C_EVENT before it reaches
+                // registered handlers. Clear it so our handler fires.
+                #[cfg(windows)]
+                {
+                    // SAFETY: Passing (None, FALSE) clears the inherited
+                    // CTRL_C ignore flag.
+                    unsafe extern "system" {
+                        fn SetConsoleCtrlHandler(
+                            handler: Option<unsafe extern "system" fn(u32) -> i32>,
+                            add: i32,
+                        ) -> i32;
+                    }
+                    unsafe {
+                        SetConsoleCtrlHandler(None, 0);
+                    }
+                }
+                let interrupt_token = tokio_util::sync::CancellationToken::new();
+                let ct = interrupt_token.clone();
+                ctrlc::set_handler(move || {
+                    ct.cancel();
+                })?;
+
+                self.execute_graph(graph, builder, interrupt_token)
+                    .await
+                    .map_err(SessionError::EarlyExit)
             }
         }
     }
@@ -551,7 +586,7 @@ impl<'a> Session<'a> {
             page_size: 12,
         };
 
-        vite_select::select_list(&mut stdout, &params, mode, |state| {
+        let select_result = vite_select::select_list(&mut stdout, &params, mode, |state| {
             use std::io::Write;
             let milestone_name =
                 vite_str::format!("task-select:{}:{}", state.query, state.selected_index);
@@ -560,6 +595,10 @@ impl<'a> Session<'a> {
             let _ = out.write_all(&milestone_bytes);
             let _ = out.flush();
         })?;
+
+        if matches!(select_result, vite_select::SelectResult::Cancelled) {
+            return Err(SessionError::EarlyExit(ExitStatus(130)));
+        }
 
         let Some(selected_index) = selected_index else {
             // Non-interactive, the list was printed.
@@ -599,6 +638,8 @@ impl<'a> Session<'a> {
             plan_options: PlanOptions {
                 extra_args: run_command.additional_args.clone().into(),
                 cache_override: run_command.flags.cache_override(),
+                concurrency_limit: None,
+                parallel: false,
             },
         })
     }
@@ -732,6 +773,7 @@ impl<'a> Session<'a> {
             &spawn_execution,
             cache,
             &self.workspace_path,
+            tokio_util::sync::CancellationToken::new(),
             tokio_util::sync::CancellationToken::new(),
         )
         .await;
