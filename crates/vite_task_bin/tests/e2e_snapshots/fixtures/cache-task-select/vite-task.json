@@ -1,0 +1,11 @@
+{
+  "tasks": {
+    "build": {
+      "command": "vtt print-file src/main.ts",
+      "cache": true
+    },
+    "lint": {
+      "command": "echo lint app"
+    }
+  }
+}
